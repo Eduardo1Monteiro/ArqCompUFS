@@ -42,7 +42,7 @@ void loadMemory(FILE *input, uint32_t offset, uint8_t *mem) {
     currentAddress += 4;
   }
 
-  for (uint32_t i = 0; i < 12; i++) {
+  for (uint32_t i = 0; i < (currentAddress - offset); i++) {
     printf("mem[%i] = %02x\n", i, mem[i]);
   }
 
@@ -57,7 +57,6 @@ int main(int argc, char *argv[]) {
          "----\n");
 
   for (uint32_t i = 0; i < argc; i++) {
-    // Outputting argument
     printf("argv[%i] = %s\n", i, argv[i]);
   }
 
@@ -77,6 +76,23 @@ int main(int argc, char *argv[]) {
   uint8_t *mem = (uint8_t *)(malloc(32 * 1024));
 
   loadMemory(files.input, offset, mem);
+
+  uint8_t run = 1;
+
+  while (run) {
+    const uint32_t instruction = ((uint32_t *)(mem))[(pc - offset) >> 2];
+    const uint8_t opcode = instruction & 0b1111111;
+    const uint8_t funct7 = instruction >> 25;
+    const uint16_t imm = instruction >> 20;
+    const uint8_t uimm = (instruction & (0b11111 << 20)) >> 20;
+    const uint8_t rs1 = (instruction & (0b11111 << 15)) >> 15;
+    const uint8_t funct3 = (instruction & (0b111 << 12)) >> 12;
+    const uint8_t rd = (instruction & (0b11111 << 7)) >> 7;
+    const uint32_t imm20 = ((instruction >> 31) << 19) |
+                           (((instruction & (0b11111111 << 12)) >> 12) << 11) |
+                           (((instruction & (0b1 << 20)) >> 20) << 10) |
+                           ((instruction & (0b1111111111 << 21)) >> 21);
+  }
 
   return 0;
 }
