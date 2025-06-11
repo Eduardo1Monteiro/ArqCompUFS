@@ -116,6 +116,43 @@ int main(int argc, char *argv[]) {
           x[rd] = data;
         }
       }
+      // andi
+      else if (funct3 == 0b111) {
+        const uint32_t simm = (imm >> 11) ? (0xFFFFF000 | imm) : imm;
+        const uint32_t data = rs1 & simm;
+
+        printf("0x%08x:andi   %s,%s,%d  %s=0x%08x&%d=0x%08x\n", pc, x_label[rd],
+               x_label[rs1], simm, x_label[rd], x[rs1], simm, data);
+
+        if (rd != 0) {
+          x[rd] = data;
+        }
+      }
+      // ori
+      else if (funct3 == 0b110) {
+        const uint32_t simm = (imm >> 11) ? (0xFFFFF000 | imm) : imm;
+        const uint32_t data = rs1 | simm;
+
+        printf("0x%08x:ori   %s,%s,%d  %s=0x%08x|%d=0x%08x\n", pc, x_label[rd],
+               x_label[rs1], simm, x_label[rd], x[rs1], simm, data);
+
+        if (rd != 0) {
+          x[rd] = data;
+        }
+      }
+      // xori
+      // later and in here the not instruction
+      else if (funct3 == 0b100) {
+        const uint32_t simm = (imm >> 11) ? (0xFFFFF000 | imm) : imm;
+        const uint32_t data = rs1 ^ simm;
+
+        printf("0x%08x:xori   %s,%s,%d  %s=0x%08x^%d=0x%08x\n", pc, x_label[rd],
+               x_label[rs1], simm, x_label[rd], x[rs1], simm, data);
+
+        if (rd != 0) {
+          x[rd] = data;
+        }
+      }
       break;
 
     case 0b0110011:
