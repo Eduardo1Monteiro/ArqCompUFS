@@ -92,6 +92,53 @@ int main(int argc, char *argv[]) {
                            (((instruction & (0b11111111 << 12)) >> 12) << 11) |
                            (((instruction & (0b1 << 20)) >> 20) << 10) |
                            ((instruction & (0b1111111111 << 21)) >> 21);
+
+    switch (opcode) {
+    case 0b0010011:
+      if (funct3 == 0b001 && funct7 == 0b0000000) {
+        const uint32_t data = x[rs1] << uimm;
+        printf("0x%08x:slli   %s,%s,%u  %s=0x%08x<<%u=0x%08x\n", pc,
+               x_label[rd], x_label[rs1], imm, x_label[rd], x[rs1], imm, data);
+        if (rd != 0)
+          x[rd] = data;
+      }
+
+      else if (funct3 == 0b000) {
+        const uint32_t simm = (imm >> 11) ? (0xFFFFF000 | imm) : imm;
+        const uint32_t data = simm + x[rs1];
+
+        printf("0x%08x:addi   %s,%s,%d  %s=0x%08x+%d=0x%08x\n", pc, x_label[rd],
+               x_label[rs1], imm, x_label[rd], x[rs1], simm, data);
+
+        if (rd != 0) {
+          x[rd] = data;
+        }
+      }
+      break;
+    case 0b1110011:
+      if (funct3 == 0b000 && imm == 1) {
+        printf("0x%08x:ebreak\n", pc);
+        const uint32_t previous = ((uint32_t *)(mem))[(pc - 4 - offset) >> 2];
+        const uint32_t next = ((uint32_t *)(mem))[(pc + 4 - offset) >> 2];
+        if (previous == 0x01f01013 && next == 0x40705013)
+          run = 0;
+      }
+      break;
+    case 0b1101111:
+      const uint32_t simm = (imm20 >> 19) ? (0xFFF00000 | imm20) : (imm20);
+      const uint32_t address = pc + (simm << 1);
+      printf("0x%08x:jal    %s,0x%05x    pc=0x%08x,%s=0x%08x\n", pc,
+             x_label[rd], imm, address, x_label[rd], pc + 4);
+      if (rd != 0)
+        x[rd] = pc + 4;
+      pc = address - 4;
+      break;
+    default:
+      printf("error: unknown instruction opcode at pc = 0x%08x\n", pc);
+      run = 0;
+    }
+    // Incrementing pc by 4
+    pc = pc + 4;
   }
 
   return 0;
