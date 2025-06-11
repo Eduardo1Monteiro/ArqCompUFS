@@ -96,6 +96,7 @@ int main(int argc, char *argv[]) {
 
     switch (opcode) {
     case 0b0010011:
+      // slli
       if (funct3 == 0b001 && funct7 == 0b0000000) {
         const uint32_t data = x[rs1] << uimm;
         printf("0x%08x:slli   %s,%s,%u  %s=0x%08x<<%u=0x%08x\n", pc,
@@ -103,7 +104,7 @@ int main(int argc, char *argv[]) {
         if (rd != 0)
           x[rd] = data;
       }
-
+      // addi
       else if (funct3 == 0b000) {
         const uint32_t simm = (imm >> 11) ? (0xFFFFF000 | imm) : imm;
         const uint32_t data = simm + x[rs1];
@@ -118,6 +119,7 @@ int main(int argc, char *argv[]) {
       break;
 
     case 0b0110011:
+      // add
       if (funct3 == 0b000 && funct7 == 0b0000000) {
         const uint32_t data = x[rs1] + x[rs2];
 
@@ -129,9 +131,58 @@ int main(int argc, char *argv[]) {
           x[rd] = data;
         }
       }
+      // sub
+      else if (funct3 == 0b000 && funct7 == 0b100000) {
+        const uint32_t data = x[rs1] - x[rs2];
+
+        printf("0x%08x:sub   %s,%s,%s  %s=0x%08x-0x%08x=0x%08x\n", pc,
+               x_label[rd], x_label[rs1], x_label[rs2], x_label[rd], x[rs1],
+               x[rs2], data);
+
+        if (rd != 0) {
+          x[rd] = data;
+        }
+      }
+      // xor
+      else if (funct3 == 0b100 && funct7 == 0b0000000) {
+        const uint32_t data = x[rs1] ^ x[rs2];
+
+        printf("0x%08x:xor    %s,%s,%s   %s=0x%08x^0x%08x=0x%08x\n", pc,
+               x_label[rd], x_label[rs1], x_label[rs2], x_label[rd], x[rs1],
+               x[rs2], data);
+
+        if (rd != 0) {
+          x[rd] = data;
+        }
+      }
+      // or
+      else if (funct3 == 0b110 && funct7 == 0b0000000) {
+        const uint32_t data = x[rs1] | x[rs2];
+
+        printf("0x%08x:or    %s,%s,%s   %s=0x%08x|0x%08x=0x%08x\n", pc,
+               x_label[rd], x_label[rs1], x_label[rs2], x_label[rd], x[rs1],
+               x[rs2], data);
+
+        if (rd != 0) {
+          x[rd] = data;
+        }
+      }
+      // and
+      else if (funct3 == 0b111 && funct7 == 0b0000000) {
+        const uint32_t data = x[rs1] & x[rs2];
+
+        printf("0x%08x:and    %s,%s,%s   %s=0x%08x&0x%08x=0x%08x\n", pc,
+               x_label[rd], x_label[rs1], x_label[rs2], x_label[rd], x[rs1],
+               x[rs2], data);
+
+        if (rd != 0) {
+          x[rd] = data;
+        }
+      }
       break;
 
     case 0b1110011:
+      // ebreak
       if (funct3 == 0b000 && imm == 1) {
         printf("0x%08x:ebreak\n", pc);
         const uint32_t previous = ((uint32_t *)(mem))[(pc - 4 - offset) >> 2];
@@ -141,6 +192,7 @@ int main(int argc, char *argv[]) {
       }
       break;
     case 0b1101111:
+      // jal
       const uint32_t simm = (imm20 >> 19) ? (0xFFF00000 | imm20) : (imm20);
       const uint32_t address = pc + (simm << 1);
       printf("0x%08x:jal    %s,0x%05x    pc=0x%08x,%s=0x%08x\n", pc,
@@ -153,7 +205,6 @@ int main(int argc, char *argv[]) {
       printf("error: unknown instruction opcode at pc = 0x%08x\n", pc);
       run = 0;
     }
-    // Incrementing pc by 4
     pc = pc + 4;
   }
 
