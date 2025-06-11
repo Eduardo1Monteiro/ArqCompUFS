@@ -86,6 +86,7 @@ int main(int argc, char *argv[]) {
     const uint16_t imm = instruction >> 20;
     const uint8_t uimm = (instruction & (0b11111 << 20)) >> 20;
     const uint8_t rs1 = (instruction & (0b11111 << 15)) >> 15;
+    const uint8_t rs2 = (instruction & (0b11111 << 20)) >> 20;
     const uint8_t funct3 = (instruction & (0b111 << 12)) >> 12;
     const uint8_t rd = (instruction & (0b11111 << 7)) >> 7;
     const uint32_t imm20 = ((instruction >> 31) << 19) |
@@ -108,13 +109,28 @@ int main(int argc, char *argv[]) {
         const uint32_t data = simm + x[rs1];
 
         printf("0x%08x:addi   %s,%s,%d  %s=0x%08x+%d=0x%08x\n", pc, x_label[rd],
-               x_label[rs1], imm, x_label[rd], x[rs1], simm, data);
+               x_label[rs1], simm, x_label[rd], x[rs1], simm, data);
 
         if (rd != 0) {
           x[rd] = data;
         }
       }
       break;
+
+    case 0b0110011:
+      if (funct3 == 0b000 && funct7 == 0b0000000) {
+        const uint32_t data = x[rs1] + x[rs2];
+
+        printf("0x%08x:add   %s,%s,%s  %s=0x%08x+0x%08x=0x%08x\n", pc,
+               x_label[rd], x_label[rs1], x_label[rs2], x_label[rd], x[rs1],
+               x[rs2], data);
+
+        if (rd != 0) {
+          x[rd] = data;
+        }
+      }
+      break;
+
     case 0b1110011:
       if (funct3 == 0b000 && imm == 1) {
         printf("0x%08x:ebreak\n", pc);
