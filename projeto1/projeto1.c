@@ -102,6 +102,9 @@ int main(int argc, char *argv[]) {
     const uint8_t rs2 = (instruction & (0b11111 << 20)) >> 20;
     const uint8_t funct3 = (instruction & (0b111 << 12)) >> 12;
     const uint8_t rd = (instruction & (0b11111 << 7)) >> 7;
+    const uint8_t immS7 = (instruction >> 25) & 0b1111111;
+    const uint8_t immS5 = (instruction >> 7) & 0b11111;
+    const uint16_t immS = (immS7 << 5) | immS5;
     const uint32_t imm20 = ((instruction >> 31) << 19) |
                            (((instruction & (0b11111111 << 12)) >> 12) << 11) |
                            (((instruction & (0b1 << 20)) >> 20) << 10) |
@@ -178,6 +181,117 @@ int main(int argc, char *argv[]) {
                data);
 
         loadRd(data, rd, x);
+      }
+      break;
+
+    case 0b0000011: // L-Type
+      // lb
+      if (funct3 == 0b000) {
+        const int32_t simm = signedImmediate(imm);
+        const uint32_t address = x[rs1] + simm;
+        const uint32_t index = address - offset;
+        const int8_t byte = mem[index];
+        const int32_t data = (int8_t)byte;
+
+        printf("0x%08x:lb    %s,0x%08x(%s)   %s=mem[0x%08x]=0x%08x\n", pc,
+               x_label[rd], imm, x_label[rs1], x_label[rd], address, data);
+
+        loadRd(data, rd, x);
+      }
+      // lh
+      else if (funct3 == 0b001) {
+        const int32_t simm = signedImmediate(imm);
+        const uint32_t address = x[rs1] + simm;
+        const uint32_t index = address - offset;
+        const int16_t halfWord = mem[index] | (mem[index + 1] << 8);
+        const int32_t data = (int16_t)halfWord;
+
+        printf("0x%08x:lh    %s,0x%08x(%s)   %s=mem[0x%08x]=0x%08x\n", pc,
+               x_label[rd], imm, x_label[rs1], x_label[rd], address, data);
+
+        loadRd(data, rd, x);
+      }
+      // lbu
+      else if (funct3 == 0b100) {
+        const int32_t simm = signedImmediate(imm);
+        const uint32_t address = x[rs1] + simm;
+        const uint32_t index = address - offset;
+        const uint8_t byte = mem[index];
+        const uint32_t data = (uint8_t)byte;
+
+        printf("0x%08x:lbu    %s,0x%08x(%s)   %s=mem[0x%08x]=0x%08x\n", pc,
+               x_label[rd], imm, x_label[rs1], x_label[rd], address, data);
+
+        loadRd(data, rd, x);
+      }
+      // lhu
+      else if (funct3 == 0b101) {
+        const int32_t simm = signedImmediate(imm);
+        const uint32_t address = x[rs1] + simm;
+        const uint32_t index = address - offset;
+        const uint16_t halfWord = mem[index] | (mem[index + 1] << 8);
+        const uint32_t data = (uint16_t)halfWord;
+
+        printf("0x%08x:lhu    %s,0x%08x(%s)   %s=mem[0x%08x]=0x%08x\n", pc,
+               x_label[rd], imm, x_label[rs1], x_label[rd], address, data);
+
+        loadRd(data, rd, x);
+      }
+      // lw
+      else if (funct3 == 0b010) {
+        const uint32_t simm = signedImmediate(imm);
+        const uint32_t address = x[rs1] + simm;
+        const uint32_t index = address - offset;
+        const uint32_t data = mem[index] | (mem[index + 1] << 8) |
+                              (mem[index + 2] << 16) | (mem[index + 3] << 24);
+
+        printf("0x%08x:lw    %s,0x%08x(%s)   %s=mem[0x%08x]=0x%08x\n", pc,
+               x_label[rd], imm, x_label[rs1], x_label[rd], address, data);
+
+        loadRd(data, rd, x);
+      }
+      break;
+
+    case 0b0100011: // S-Type
+      // sw
+      if (funct3 == 0b010) {
+        const int32_t simm = signedImmediate(immS);
+        const uint32_t address = x[rs1] + simm;
+        const int32_t data = x[rs2];
+        const uint32_t index = address - offset;
+
+        mem[index + 0] = (data >> 0) & 0xFF;
+        mem[index + 1] = (data >> 8) & 0xFF;
+        mem[index + 2] = (data >> 16) & 0xFF;
+        mem[index + 3] = (data >> 24) & 0xFF;
+
+        printf("0x%08x:sw    %s,0x%08x(%s)   mem[0x%08x]=0x%08x\n", pc,
+               x_label[rs2], imm, x_label[rs1], address, data);
+      }
+      // sh
+      else if (funct3 == 0b001) {
+        const int32_t simm = signedImmediate(immS);
+        const uint32_t address = x[rs1] + simm;
+        const int32_t data = x[rs2];
+        const uint32_t index = address - offset;
+
+        mem[index + 0] = (data >> 0) & 0xFF;
+        mem[index + 1] = (data >> 8) & 0xFF;
+
+        printf("0x%08x:sh    %s,0x%08x(%s)   mem[0x%08x]=0x%08x\n", pc,
+               x_label[rs2], imm, x_label[rs1], address, data);
+      }
+      // sb
+      else if (funct3 == 0b000) {
+        const int32_t simm = signedImmediate(immS);
+        const uint32_t address = x[rs1] + simm;
+        const int32_t data = x[rs2];
+        const uint32_t index = address - offset;
+
+        mem[index + 0] = (data >> 0) & 0xFF;
+
+        printf("0x%08x:sb    %s,0x%08x(%s)   mem[0x%08x]=0x%08x\n", pc,
+               x_label[rs2], imm, x_label[rs1], address, data);
       }
       break;
 
