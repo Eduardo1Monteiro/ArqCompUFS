@@ -51,6 +51,19 @@ void loadMemory(FILE *input, uint32_t offset, uint8_t *mem) {
   return;
 }
 
+int32_t signedImmediate(uint16_t imm) {
+  if (imm & 0x800)
+    imm = (0xFFFFF000 | imm);
+
+  return imm;
+}
+
+void loadRd(uint32_t data, uint8_t rd, uint32_t x[]) {
+  if (rd != 0) {
+    x[rd] = data;
+  }
+}
+
 int main(int argc, char *argv[]) {
 
   printf("---------------------------------------------------------------------"
@@ -95,67 +108,80 @@ int main(int argc, char *argv[]) {
                            ((instruction & (0b1111111111 << 21)) >> 21);
 
     switch (opcode) {
-    case 0b0010011:
+    case 0b0010011: // I-Type
       // slli
       if (funct3 == 0b001 && funct7 == 0b0000000) {
         const uint32_t data = x[rs1] << uimm;
         printf("0x%08x:slli   %s,%s,%u  %s=0x%08x<<%u=0x%08x\n", pc,
                x_label[rd], x_label[rs1], imm, x_label[rd], x[rs1], imm, data);
-        if (rd != 0)
-          x[rd] = data;
+
+        loadRd(data, rd, x);
       }
       // addi
       else if (funct3 == 0b000) {
-        const uint32_t simm = (imm >> 11) ? (0xFFFFF000 | imm) : imm;
+        const uint32_t simm = signedImmediate(imm);
         const uint32_t data = simm + x[rs1];
 
         printf("0x%08x:addi   %s,%s,%d  %s=0x%08x+%d=0x%08x\n", pc, x_label[rd],
                x_label[rs1], simm, x_label[rd], x[rs1], simm, data);
 
-        if (rd != 0) {
-          x[rd] = data;
-        }
+        loadRd(data, rd, x);
       }
       // andi
       else if (funct3 == 0b111) {
-        const uint32_t simm = (imm >> 11) ? (0xFFFFF000 | imm) : imm;
-        const uint32_t data = rs1 & simm;
+        const uint32_t simm = signedImmediate(imm);
+        const uint32_t data = x[rs1] & simm;
 
         printf("0x%08x:andi   %s,%s,%d  %s=0x%08x&%d=0x%08x\n", pc, x_label[rd],
                x_label[rs1], simm, x_label[rd], x[rs1], simm, data);
 
-        if (rd != 0) {
-          x[rd] = data;
-        }
+        loadRd(data, rd, x);
       }
       // ori
       else if (funct3 == 0b110) {
-        const uint32_t simm = (imm >> 11) ? (0xFFFFF000 | imm) : imm;
-        const uint32_t data = rs1 | simm;
+        const uint32_t simm = signedImmediate(imm);
+        const uint32_t data = x[rs1] | simm;
 
         printf("0x%08x:ori   %s,%s,%d  %s=0x%08x|%d=0x%08x\n", pc, x_label[rd],
                x_label[rs1], simm, x_label[rd], x[rs1], simm, data);
 
-        if (rd != 0) {
-          x[rd] = data;
-        }
+        loadRd(data, rd, x);
       }
       // xori
-      // later and in here the not instruction
+      // later add in here the not instruction
       else if (funct3 == 0b100) {
-        const uint32_t simm = (imm >> 11) ? (0xFFFFF000 | imm) : imm;
-        const uint32_t data = rs1 ^ simm;
+        const uint32_t simm = signedImmediate(imm);
+        const uint32_t data = x[rs1] ^ simm;
 
         printf("0x%08x:xori   %s,%s,%d  %s=0x%08x^%d=0x%08x\n", pc, x_label[rd],
                x_label[rs1], simm, x_label[rd], x[rs1], simm, data);
 
-        if (rd != 0) {
-          x[rd] = data;
-        }
+        loadRd(data, rd, x);
+      }
+      // slti
+      else if (funct3 == 0b010) {
+        int32_t simm = signedImmediate(imm);
+        uint32_t data = ((int32_t)x[rs1] < simm) ? 1 : 0;
+
+        printf("0x%08x:slti   %s,%s,%d  %s=0x%08x<%d=0x%08x\n", pc, x_label[rd],
+               x_label[rs1], simm, x_label[rd], x[rs1], simm, data);
+
+        loadRd(data, rd, x);
+      }
+      // sltiu
+      else if (funct3 == 0b011) {
+        uint32_t simm = signedImmediate(imm);
+        uint32_t data = ((uint32_t)x[rs1] < (uint32_t)simm) ? 1 : 0;
+
+        printf("0x%08x:sltiu   %s,%s,%d  %s=0x%08x<%d=0x%08x\n", pc,
+               x_label[rd], x_label[rs1], simm, x_label[rd], x[rs1], simm,
+               data);
+
+        loadRd(data, rd, x);
       }
       break;
 
-    case 0b0110011:
+    case 0b0110011: // R-Type
       // add
       if (funct3 == 0b000 && funct7 == 0b0000000) {
         const uint32_t data = x[rs1] + x[rs2];
@@ -164,21 +190,17 @@ int main(int argc, char *argv[]) {
                x_label[rd], x_label[rs1], x_label[rs2], x_label[rd], x[rs1],
                x[rs2], data);
 
-        if (rd != 0) {
-          x[rd] = data;
-        }
+        loadRd(data, rd, x);
       }
       // sub
-      else if (funct3 == 0b000 && funct7 == 0b100000) {
+      else if (funct3 == 0b000 && funct7 == 0b0100000) {
         const uint32_t data = x[rs1] - x[rs2];
 
         printf("0x%08x:sub   %s,%s,%s  %s=0x%08x-0x%08x=0x%08x\n", pc,
                x_label[rd], x_label[rs1], x_label[rs2], x_label[rd], x[rs1],
                x[rs2], data);
 
-        if (rd != 0) {
-          x[rd] = data;
-        }
+        loadRd(data, rd, x);
       }
       // xor
       else if (funct3 == 0b100 && funct7 == 0b0000000) {
@@ -188,9 +210,7 @@ int main(int argc, char *argv[]) {
                x_label[rd], x_label[rs1], x_label[rs2], x_label[rd], x[rs1],
                x[rs2], data);
 
-        if (rd != 0) {
-          x[rd] = data;
-        }
+        loadRd(data, rd, x);
       }
       // or
       else if (funct3 == 0b110 && funct7 == 0b0000000) {
@@ -200,9 +220,7 @@ int main(int argc, char *argv[]) {
                x_label[rd], x_label[rs1], x_label[rs2], x_label[rd], x[rs1],
                x[rs2], data);
 
-        if (rd != 0) {
-          x[rd] = data;
-        }
+        loadRd(data, rd, x);
       }
       // and
       else if (funct3 == 0b111 && funct7 == 0b0000000) {
@@ -212,12 +230,29 @@ int main(int argc, char *argv[]) {
                x_label[rd], x_label[rs1], x_label[rs2], x_label[rd], x[rs1],
                x[rs2], data);
 
-        if (rd != 0) {
-          x[rd] = data;
-        }
+        loadRd(data, rd, x);
+      }
+      // slt
+      else if (funct3 == 0b010 && funct7 == 0b0000000) {
+        const uint32_t data = ((int32_t)x[rs1] < (int32_t)x[rs2]) ? 1 : 0;
+
+        printf("0x%08x:slt    %s,%s,%s   %s=0x%08x<0x%08x=0x%08x\n", pc,
+               x_label[rd], x_label[rs1], x_label[rs2], x_label[rd], x[rs1],
+               x[rs2], data);
+
+        loadRd(data, rd, x);
+      }
+      // sltu
+      else if (funct3 == 0b011 && funct7 == 0b0000000) {
+        const uint32_t data = ((uint32_t)x[rs1] < (uint32_t)x[rs2]) ? 1 : 0;
+
+        printf("0x%08x:sltu    %s,%s,%s   %s=0x%08x<0x%08x=0x%08x\n", pc,
+               x_label[rd], x_label[rs1], x_label[rs2], x_label[rd], x[rs1],
+               x[rs2], data);
+
+        loadRd(data, rd, x);
       }
       break;
-
     case 0b1110011:
       // ebreak
       if (funct3 == 0b000 && imm == 1) {
