@@ -42,20 +42,13 @@ void loadMemory(FILE *input, uint32_t offset, uint8_t *mem) {
     currentAddress += 4;
   }
 
-  for (uint32_t i = 0; i < (currentAddress - offset); i++) {
-    printf("mem[%i] = %02x\n", i, mem[i]);
-  }
-
   free(lineBuffer);
 
   return;
 }
 
 int32_t signedImmediate(uint16_t imm) {
-  if (imm & 0x800)
-    imm = (0xFFFFF000 | imm);
-
-  return imm;
+  return (imm & 0x800) ? (0xFFFFF000 | imm) : imm;
 }
 
 void loadRd(uint32_t data, uint8_t rd, uint32_t x[]) {
@@ -122,8 +115,8 @@ int main(int argc, char *argv[]) {
       }
       // addi
       else if (funct3 == 0b000) {
-        const uint32_t simm = signedImmediate(imm);
-        const uint32_t data = simm + x[rs1];
+        const int32_t simm = signedImmediate(imm);
+        const int32_t data = simm + ((int32_t)x[rs1]);
 
         printf("0x%08x:addi   %s,%s,%d  %s=0x%08x+%d=0x%08x\n", pc, x_label[rd],
                x_label[rs1], simm, x_label[rd], x[rs1], simm, data);
@@ -178,6 +171,26 @@ int main(int argc, char *argv[]) {
 
         printf("0x%08x:sltiu   %s,%s,%d  %s=0x%08x<%d=0x%08x\n", pc,
                x_label[rd], x_label[rs1], simm, x_label[rd], x[rs1], simm,
+               data);
+
+        loadRd(data, rd, x);
+      }
+      // srli
+      else if (funct3 == 0b101 && funct7 == 0b0000000) {
+        const uint32_t data = x[rs1] >> uimm;
+
+        printf("0x%08x:srli   %s,%s,%d  %s=0x%08x>>%d=0x%08x\n", pc,
+               x_label[rd], x_label[rs1], uimm, x_label[rd], x[rs1], uimm,
+               data);
+
+        loadRd(data, rd, x);
+      }
+      // srai
+      else if (funct3 == 0b101 && funct7 == 0b0100000) {
+        const uint32_t data = ((int32_t)x[rs1]) >> uimm;
+
+        printf("0x%08x:srai   %s,%s,%d  %s=0x%08x>>%d=0x%08x\n", pc,
+               x_label[rd], x_label[rs1], uimm, x_label[rd], x[rs1], uimm,
                data);
 
         loadRd(data, rd, x);
@@ -366,15 +379,45 @@ int main(int argc, char *argv[]) {
 
         loadRd(data, rd, x);
       }
+      // sll
+      else if (funct3 == 0b001 && funct7 == 0b0000000) {
+        const uint32_t shift = x[rs2] & 0b11111;
+        const uint32_t data = x[rs1] << shift;
+
+        printf("0x%08x:sll    %s,%s,%s   %s=0x%08x<<0x%08x=0x%08x\n", pc,
+               x_label[rd], x_label[rs1], x_label[rs2], x_label[rd], x[rs1],
+               x[rs2], data);
+
+        loadRd(data, rd, x);
+      }
+      // srl
+      else if (funct3 == 0b101 && funct7 == 0b0000000) {
+        const uint32_t shift = x[rs2] & 0b11111;
+        const uint32_t data = x[rs1] >> shift;
+
+        printf("0x%08x:srl    %s,%s,%s   %s=0x%08x>>0x%08x=0x%08x\n", pc,
+               x_label[rd], x_label[rs1], x_label[rs2], x_label[rd], x[rs1],
+               x[rs2], data);
+
+        loadRd(data, rd, x);
+      }
+      // sra
+      else if (funct3 == 0b101 && funct7 == 0b0100000) {
+        const uint32_t shift = x[rs2] & 0b11111;
+        const int32_t data = ((int32_t)x[rs1]) >> shift;
+
+        printf("0x%08x:sra    %s,%s,%s   %s=0x%08x>>>0x%08x=0x%08x\n", pc,
+               x_label[rd], x_label[rs1], x_label[rs2], x_label[rd], x[rs1],
+               x[rs2], data);
+
+        loadRd(data, rd, x);
+      }
       break;
     case 0b1110011:
       // ebreak
       if (funct3 == 0b000 && imm == 1) {
         printf("0x%08x:ebreak\n", pc);
-        const uint32_t previous = ((uint32_t *)(mem))[(pc - 4 - offset) >> 2];
-        const uint32_t next = ((uint32_t *)(mem))[(pc + 4 - offset) >> 2];
-        if (previous == 0x01f01013 && next == 0x40705013)
-          run = 0;
+        run = 0;
       }
       break;
     case 0b1101111:
