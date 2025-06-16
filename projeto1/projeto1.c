@@ -62,10 +62,6 @@ int main(int argc, char *argv[]) {
   printf("---------------------------------------------------------------------"
          "----\n");
 
-  for (uint32_t i = 0; i < argc; i++) {
-    printf("argv[%i] = %s\n", i, argv[i]);
-  }
-
   Files files = readFile(argv);
 
   const uint32_t offset = 0x80000000;
@@ -102,6 +98,15 @@ int main(int argc, char *argv[]) {
                            (((instruction & (0b11111111 << 12)) >> 12) << 11) |
                            (((instruction & (0b1 << 20)) >> 20) << 10) |
                            ((instruction & (0b1111111111 << 21)) >> 21);
+    const uint32_t imm_b_12 = (instruction >> 19) & 0x800;
+    const uint32_t imm_b_10_5 = (instruction >> 20) & 0x7E0;
+    const uint32_t imm_b_4_1 = (instruction >> 7) & 0x1E;
+    const uint32_t imm_b_11 = (instruction << 4) & 0x800;
+    const uint32_t imm_b_unsigned =
+        imm_b_12 | imm_b_11 | imm_b_10_5 | imm_b_4_1;
+    const int32_t branchImm = (imm_b_unsigned & 0x1000)
+                                  ? (0xFFFFE000 | imm_b_unsigned)
+                                  : imm_b_unsigned;
 
     switch (opcode) {
     case 0b0010011: // I-Type
@@ -196,13 +201,30 @@ int main(int argc, char *argv[]) {
         loadRd(data, rd, x);
       }
       break;
+    case 0b0110111: // LUI
+      uint32_t immU = instruction & 0xFFFFF000;
+      uint32_t data = immU;
 
+      printf("0x%08x:lui    %s,0x%08x   %s=0x%08x\n", pc, x_label[rd],
+             (immU >> 12), x_label[rd], data);
+
+      loadRd(data, rd, x);
+      break;
+    case 0b0010111: // AUIPC
+      immU = instruction & 0xFFFFF000;
+      data = immU + pc;
+
+      printf("0x%08x:auipc    %s,0x%08x   %s=0x%08x\n", pc, x_label[rd],
+             (immU >> 12), x_label[rd], data);
+
+      loadRd(data, rd, x);
+      break;
     case 0b0000011: // L-Type
       // lb
       if (funct3 == 0b000) {
         const int32_t simm = signedImmediate(imm);
         const uint32_t address = x[rs1] + simm;
-        const uint32_t index = address - offset;
+        const uint32_t index = address;
         const int8_t byte = mem[index];
         const int32_t data = (int8_t)byte;
 
@@ -215,7 +237,7 @@ int main(int argc, char *argv[]) {
       else if (funct3 == 0b001) {
         const int32_t simm = signedImmediate(imm);
         const uint32_t address = x[rs1] + simm;
-        const uint32_t index = address - offset;
+        const uint32_t index = address;
         const int16_t halfWord = mem[index] | (mem[index + 1] << 8);
         const int32_t data = (int16_t)halfWord;
 
@@ -228,7 +250,7 @@ int main(int argc, char *argv[]) {
       else if (funct3 == 0b100) {
         const int32_t simm = signedImmediate(imm);
         const uint32_t address = x[rs1] + simm;
-        const uint32_t index = address - offset;
+        const uint32_t index = address;
         const uint8_t byte = mem[index];
         const uint32_t data = (uint8_t)byte;
 
@@ -241,7 +263,7 @@ int main(int argc, char *argv[]) {
       else if (funct3 == 0b101) {
         const int32_t simm = signedImmediate(imm);
         const uint32_t address = x[rs1] + simm;
-        const uint32_t index = address - offset;
+        const uint32_t index = address;
         const uint16_t halfWord = mem[index] | (mem[index + 1] << 8);
         const uint32_t data = (uint16_t)halfWord;
 
@@ -254,7 +276,7 @@ int main(int argc, char *argv[]) {
       else if (funct3 == 0b010) {
         const uint32_t simm = signedImmediate(imm);
         const uint32_t address = x[rs1] + simm;
-        const uint32_t index = address - offset;
+        const uint32_t index = address;
         const uint32_t data = mem[index] | (mem[index + 1] << 8) |
                               (mem[index + 2] << 16) | (mem[index + 3] << 24);
 
@@ -264,14 +286,28 @@ int main(int argc, char *argv[]) {
         loadRd(data, rd, x);
       }
       break;
+    case 0b1100111:
+      // jalr
+      if (funct3 == 0b000) {
+        const uint32_t simm = signedImmediate(imm);
+        const uint32_t data = pc + 4;
+        uint32_t address = x[rs1] + simm;
+        address = address & ~1;
 
+        printf("0x%08x:jalr    %s,%s,0x%08x   %s=0x%08x+0x%08x,%s=0x%08x", pc,
+               x_label[rd], x_label[rs1], imm, x_label[pc], x[rs1], simm,
+               x_label[rd], data);
+
+        loadRd(data, rd, x);
+      }
+      break;
     case 0b0100011: // S-Type
       // sw
       if (funct3 == 0b010) {
         const int32_t simm = signedImmediate(immS);
         const uint32_t address = x[rs1] + simm;
         const int32_t data = x[rs2];
-        const uint32_t index = address - offset;
+        const uint32_t index = address;
 
         mem[index + 0] = (data >> 0) & 0xFF;
         mem[index + 1] = (data >> 8) & 0xFF;
@@ -286,7 +322,7 @@ int main(int argc, char *argv[]) {
         const int32_t simm = signedImmediate(immS);
         const uint32_t address = x[rs1] + simm;
         const int32_t data = x[rs2];
-        const uint32_t index = address - offset;
+        const uint32_t index = address;
 
         mem[index + 0] = (data >> 0) & 0xFF;
         mem[index + 1] = (data >> 8) & 0xFF;
@@ -299,7 +335,7 @@ int main(int argc, char *argv[]) {
         const int32_t simm = signedImmediate(immS);
         const uint32_t address = x[rs1] + simm;
         const int32_t data = x[rs2];
-        const uint32_t index = address - offset;
+        const uint32_t index = address;
 
         mem[index + 0] = (data >> 0) & 0xFF;
 
@@ -411,6 +447,62 @@ int main(int argc, char *argv[]) {
                x[rs2], data);
 
         loadRd(data, rd, x);
+      }
+      break;
+    case 0b1100011:
+      if (funct3 == 0b000) { // beq
+        if (x[rs1] == x[rs2]) {
+          printf(
+              "0x%08x:beq    %s,%s,0x%08x   (0x%08x==0x%08x)=u1->pc=0x%08x\n",
+              pc, x_label[rs1], x_label[rs2], pc + branchImm, x[rs1], x[rs2],
+              pc + branchImm);
+
+          pc += branchImm - 4;
+        }
+      } else if (funct3 == 0b001) { // bne
+        if (x[rs1] != x[rs2]) {
+          printf(
+              "0x%08x:bne    %s,%s,0x%08x   (0x%08x!=0x%08x)=u1->pc=0x%08x\n",
+              pc, x_label[rs1], x_label[rs2], pc + branchImm, x[rs1], x[rs2],
+              pc + branchImm);
+
+          pc += branchImm - 4;
+        }
+      } else if (funct3 == 0b100) { // blt
+        if ((int32_t)x[rs1] < (int32_t)x[rs2]) {
+          printf("0x%08x:blt    %s,%s,0x%08x   (0x%08x<0x%08x)=u1->pc=0x%08x\n",
+                 pc, x_label[rs1], x_label[rs2], pc + branchImm, x[rs1], x[rs2],
+                 pc + branchImm);
+
+          pc += branchImm - 4;
+        }
+      } else if (funct3 == 0b101) { // bge
+        if ((int32_t)x[rs1] >= (int32_t)x[rs2]) {
+          printf(
+              "0x%08x:bge    %s,%s,0x%08x   (0x%08x>=0x%08x)=u1->pc=0x%08x\n",
+              pc, x_label[rs1], x_label[rs2], pc + branchImm, x[rs1], x[rs2],
+              pc + branchImm);
+
+          pc += branchImm - 4;
+        }
+      } else if (funct3 == 0b110) { // bltu
+        if (x[rs1] < x[rs2]) {
+          printf(
+              "0x%08x:bltu    %s,%s,0x%08x   (0x%08x<0x%08x)=u1->pc=0x%08x\n",
+              pc, x_label[rs1], x_label[rs2], pc + branchImm, x[rs1], x[rs2],
+              pc + branchImm);
+
+          pc += branchImm - 4;
+        }
+      } else if (funct3 == 0b111) { // bgeu
+        if (x[rs1] >= x[rs2]) {
+          printf(
+              "0x%08x:bgeu    %s,%s,0x%08x   (0x%08x>=0x%08x)=u1->pc=0x%08x\n",
+              pc, x_label[rs1], x_label[rs2], pc + branchImm, x[rs1], x[rs2],
+              pc + branchImm);
+
+          pc += branchImm - 4;
+        }
       }
       break;
     case 0b1110011:
