@@ -448,6 +448,130 @@ int main(int argc, char *argv[]) {
 
         loadRd(data, rd, x);
       }
+      // mul
+      else if (funct3 == 0b000 && funct7 == 0b0000001) {
+        const int64_t v1 = (int32_t)x[rs1];
+        const int64_t v2 = (int32_t)x[rs2];
+        const int64_t product = v1 * v2;
+        const uint32_t data = product;
+
+        printf("0x%08x:mul   %s,%s,%s  %s=0x%08x*0x%08x=0x%08x\n", pc,
+               x_label[rd], x_label[rs1], x_label[rs2], x_label[rd], x[rs1],
+               x[rs2], data);
+
+        loadRd(data, rd, x);
+      }
+      // mulh
+      else if (funct3 == 0b001 && funct7 == 0b0000001) {
+        const int64_t v1 = (int32_t)x[rs1];
+        const int64_t v2 = (int32_t)x[rs2];
+        const int64_t product = (int64_t)v1 * (int64_t)v2;
+        const uint32_t data = product >> 32;
+
+        printf("0x%08x:mulh   %s,%s,%s  %s=0x%08x*0x%08x=0x%08x\n", pc,
+               x_label[rd], x_label[rs1], x_label[rs2], x_label[rd], x[rs1],
+               x[rs2], data);
+
+        loadRd(data, rd, x);
+      }
+      // mulhsu
+      else if (funct3 == 0b010 && funct7 == 0b0000001) {
+        const int64_t v1 = (int32_t)x[rs1];
+        const uint64_t v2 = (uint32_t)x[rs2];
+        const int64_t product = (int64_t)v1 * (uint64_t)v2;
+        const uint32_t data = product >> 32;
+
+        printf("0x%08x:mulhsu   %s,%s,%s  %s=0x%08x*0x%08x=0x%08x\n", pc,
+               x_label[rd], x_label[rs1], x_label[rs2], x_label[rd], x[rs1],
+               x[rs2], data);
+
+        loadRd(data, rd, x);
+      }
+      // mulhu
+      else if (funct3 == 0b011 && funct7 == 0b0000001) {
+        const uint64_t v1 = (int32_t)x[rs1];
+        const uint64_t v2 = (int32_t)x[rs2];
+        const uint64_t product = (uint64_t)v1 * (uint64_t)v2;
+        const uint32_t data = product >> 32;
+
+        printf("0x%08x:mulhu   %s,%s,%s  %s=0x%08x*0x%08x=0x%08x\n", pc,
+               x_label[rd], x_label[rs1], x_label[rs2], x_label[rd], x[rs1],
+               x[rs2], data);
+
+        loadRd(data, rd, x);
+      }
+      // div
+      else if (funct3 == 0b100 && funct7 == 0b0000001) {
+        int32_t data;
+
+        if (x[rs2] == 0) {
+          data = 0xFFFFFFFF;
+        } else if (x[rs1] == 0x80000000 && x[rs2] == -1) {
+          data = 0x80000000;
+        } else {
+          data = (int32_t)x[rs1] / (int32_t)x[rs2];
+        }
+
+        printf("0x%08x:div   %s,%s,%s  %s=0x%08x/0x%08x=0x%08x\n", pc,
+               x_label[rd], x_label[rs1], x_label[rs2], x_label[rd], x[rs1],
+               x[rs2], data);
+
+        loadRd(data, rd, x);
+      }
+      // divu
+      else if (funct3 == 0b101 && funct7 == 0b0000001) {
+        uint32_t data;
+
+        if (x[rs2] == 0) {
+          data = 0xFFFFFFFF;
+        } else if (x[rs1] == 0x80000000 && x[rs2] == -1) {
+          data = 0x80000000;
+        } else {
+          data = (uint32_t)x[rs1] / (uint32_t)x[rs2];
+        }
+
+        printf("0x%08x:divu   %s,%s,%s  %s=0x%08x/0x%08x=0x%08x\n", pc,
+               x_label[rd], x_label[rs1], x_label[rs2], x_label[rd], x[rs1],
+               x[rs2], data);
+
+        loadRd(data, rd, x);
+      }
+      // rem
+      else if (funct3 == 0b110 && funct7 == 0b0000001) {
+        int32_t data;
+
+        if (x[rs2] == 0) {
+          data = x[rs1];
+        } else if (x[rs1] == 0x80000000 && x[rs2] == -1) {
+          data = 0;
+        } else {
+          data = (int32_t)x[rs1] % (int32_t)x[rs2];
+        }
+
+        printf("0x%08x:rem   %s,%s,%s  %s=0x%08x%%0x%08x=0x%08x\n", pc,
+               x_label[rd], x_label[rs1], x_label[rs2], x_label[rd], x[rs1],
+               x[rs2], data);
+
+        loadRd(data, rd, x);
+      }
+      // remu
+      else if (funct3 == 0b111 && funct7 == 0b0000001) {
+        uint32_t data;
+
+        if (x[rs2] == 0) {
+          data = x[rs1];
+        } else if (x[rs1] == 0x80000000 && x[rs2] == -1) {
+          data = 0;
+        } else {
+          data = (uint32_t)x[rs1] % (uint32_t)x[rs2];
+        }
+
+        printf("0x%08x:remu   %s,%s,%s  %s=0x%08x%%0x%08x=0x%08x\n", pc,
+               x_label[rd], x_label[rs1], x_label[rs2], x_label[rd], x[rs1],
+               x[rs2], data);
+
+        loadRd(data, rd, x);
+      }
       break;
     case 0b1100011:
       if (funct3 == 0b000) { // beq
