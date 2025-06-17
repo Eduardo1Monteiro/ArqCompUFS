@@ -14,6 +14,12 @@ Files readFile(char *argv[]) {
   Files files;
 
   files.input = fopen(argv[1], "r");
+
+  if (files.input == NULL) {
+    perror("FATAL: Error opening input file");
+    exit(EXIT_FAILURE);
+  }
+
   files.output = fopen(argv[2], "w");
   files.terminalInput = fopen(argv[3], "r");
   files.terminalOutput = fopen(argv[4], "w");
@@ -23,26 +29,35 @@ Files readFile(char *argv[]) {
 
 void loadMemory(FILE *input, uint32_t offset, uint8_t *mem) {
 
-  char *lineBuffer = (char *)(malloc(256 * sizeof(char)));
-  uint32_t instruction;
-  uint32_t currentAddress = offset;
+  char lineBuffer[256];
+  uint32_t currentAddress = 0;
 
   rewind(input);
 
-  while (fgets(lineBuffer, 256, input) != NULL) {
+  while (fgets(lineBuffer, sizeof(lineBuffer), input) != NULL) {
 
-    uint32_t memIndex = currentAddress - offset;
+    if (lineBuffer[0] == '@') {
+      sscanf(lineBuffer, "@%x", &currentAddress);
+    } else {
+      char *ptr = lineBuffer;
+      int chars_scanned = 0;
+      unsigned int byte_val = 0;
 
-    sscanf(lineBuffer, "%x", &instruction);
+      while (sscanf(ptr, "%x%n", &byte_val, &chars_scanned) == 1) {
 
-    for (uint32_t i = 0; i < 4; i++) {
-      mem[memIndex + i] = (instruction >> (8 * i)) & 0xFF;
+        if (currentAddress >= offset) {
+          uint32_t mem_index = currentAddress - offset;
+
+          if (mem_index < (32 * 1024)) {
+            mem[mem_index] = (uint8_t)byte_val;
+          }
+        }
+
+        currentAddress++;
+        ptr += chars_scanned;
+      }
     }
-
-    currentAddress += 4;
   }
-
-  free(lineBuffer);
 
   return;
 }
@@ -77,20 +92,28 @@ int main(int argc, char *argv[]) {
 
   uint8_t *mem = (uint8_t *)(malloc(32 * 1024));
 
+  if (mem == NULL) {
+    perror("FATAL: Failed to allocate memory");
+    exit(EXIT_FAILURE);
+  }
+
   loadMemory(files.input, offset, mem);
 
   uint8_t run = 1;
 
   while (run) {
-    const uint32_t instruction = ((uint32_t *)(mem))[(pc - offset) >> 2];
-    const uint8_t opcode = instruction & 0b1111111;
-    const uint8_t funct7 = instruction >> 25;
+    // Decoder
+    uint32_t instruction = mem[pc - offset] | (mem[pc - offset + 1] << 8) |
+                           (mem[pc - offset + 2] << 16) |
+                           (mem[pc - offset + 3] << 24);
+    const uint8_t opcode = instruction & 0x7F;
+    const uint8_t funct7 = (instruction >> 25) & 0x7F;
     const uint16_t imm = instruction >> 20;
     const uint8_t uimm = (instruction & (0b11111 << 20)) >> 20;
-    const uint8_t rs1 = (instruction & (0b11111 << 15)) >> 15;
-    const uint8_t rs2 = (instruction & (0b11111 << 20)) >> 20;
-    const uint8_t funct3 = (instruction & (0b111 << 12)) >> 12;
-    const uint8_t rd = (instruction & (0b11111 << 7)) >> 7;
+    const uint8_t rs1 = (instruction >> 15) & 0x1F;
+    const uint8_t rs2 = (instruction >> 20) & 0x1F;
+    const uint8_t funct3 = (instruction >> 12) & 0x07;
+    const uint8_t rd = (instruction >> 7) & 0x1F;
     const uint8_t immS7 = (instruction >> 25) & 0b1111111;
     const uint8_t immS5 = (instruction >> 7) & 0b11111;
     const uint16_t immS = (immS7 << 5) | immS5;
@@ -98,12 +121,15 @@ int main(int argc, char *argv[]) {
                            (((instruction & (0b11111111 << 12)) >> 12) << 11) |
                            (((instruction & (0b1 << 20)) >> 20) << 10) |
                            ((instruction & (0b1111111111 << 21)) >> 21);
-    const uint32_t imm_b_12 = (instruction >> 19) & 0x800;
-    const uint32_t imm_b_10_5 = (instruction >> 20) & 0x7E0;
-    const uint32_t imm_b_4_1 = (instruction >> 7) & 0x1E;
-    const uint32_t imm_b_11 = (instruction << 4) & 0x800;
-    const uint32_t imm_b_unsigned =
-        imm_b_12 | imm_b_11 | imm_b_10_5 | imm_b_4_1;
+    const uint32_t imm12 = (instruction >> 19) & 0x1000; // bit 12 is inst[31]
+    const uint32_t imm11 = (instruction & 0x80) << 4;    // bit 11 is inst[7]
+    const uint32_t imm10_5 =
+        (instruction >> 20) & 0x7E0; // bits 10:5 are inst[30:25]
+    const uint32_t imm4_1 =
+        (instruction >> 7) & 0x1E; // bits 4:1 are inst[11:8]
+
+    const uint32_t imm_b_unsigned = imm12 | imm11 | imm10_5 | imm4_1;
+
     const int32_t branchImm = (imm_b_unsigned & 0x1000)
                                   ? (0xFFFFE000 | imm_b_unsigned)
                                   : imm_b_unsigned;
@@ -115,7 +141,9 @@ int main(int argc, char *argv[]) {
         const uint32_t data = x[rs1] << uimm;
         printf("0x%08x:slli   %s,%s,%u  %s=0x%08x<<%u=0x%08x\n", pc,
                x_label[rd], x_label[rs1], imm, x_label[rd], x[rs1], imm, data);
-
+        fprintf(files.output, "0x%08x:slli   %s,%s,%u  %s=0x%08x<<%u=0x%08x\n",
+                pc, x_label[rd], x_label[rs1], imm, x_label[rd], x[rs1], imm,
+                data);
         loadRd(data, rd, x);
       }
       // addi
@@ -125,7 +153,9 @@ int main(int argc, char *argv[]) {
 
         printf("0x%08x:addi   %s,%s,%d  %s=0x%08x+%d=0x%08x\n", pc, x_label[rd],
                x_label[rs1], simm, x_label[rd], x[rs1], simm, data);
-
+        fprintf(files.output, "0x%08x:addi   %s,%s,%d  %s=0x%08x+%d=0x%08x\n",
+                pc, x_label[rd], x_label[rs1], simm, x_label[rd], x[rs1], simm,
+                data);
         loadRd(data, rd, x);
       }
       // andi
@@ -135,7 +165,9 @@ int main(int argc, char *argv[]) {
 
         printf("0x%08x:andi   %s,%s,%d  %s=0x%08x&%d=0x%08x\n", pc, x_label[rd],
                x_label[rs1], simm, x_label[rd], x[rs1], simm, data);
-
+        fprintf(files.output, "0x%08x:andi   %s,%s,%d  %s=0x%08x&%d=0x%08x\n",
+                pc, x_label[rd], x_label[rs1], simm, x_label[rd], x[rs1], simm,
+                data);
         loadRd(data, rd, x);
       }
       // ori
@@ -145,7 +177,9 @@ int main(int argc, char *argv[]) {
 
         printf("0x%08x:ori   %s,%s,%d  %s=0x%08x|%d=0x%08x\n", pc, x_label[rd],
                x_label[rs1], simm, x_label[rd], x[rs1], simm, data);
-
+        fprintf(files.output, "0x%08x:ori   %s,%s,%d  %s=0x%08x|%d=0x%08x\n",
+                pc, x_label[rd], x_label[rs1], simm, x_label[rd], x[rs1], simm,
+                data);
         loadRd(data, rd, x);
       }
       // xori
@@ -156,7 +190,9 @@ int main(int argc, char *argv[]) {
 
         printf("0x%08x:xori   %s,%s,%d  %s=0x%08x^%d=0x%08x\n", pc, x_label[rd],
                x_label[rs1], simm, x_label[rd], x[rs1], simm, data);
-
+        fprintf(files.output, "0x%08x:xori   %s,%s,%d  %s=0x%08x^%d=0x%08x\n",
+                pc, x_label[rd], x_label[rs1], simm, x_label[rd], x[rs1], simm,
+                data);
         loadRd(data, rd, x);
       }
       // slti
@@ -166,7 +202,9 @@ int main(int argc, char *argv[]) {
 
         printf("0x%08x:slti   %s,%s,%d  %s=0x%08x<%d=0x%08x\n", pc, x_label[rd],
                x_label[rs1], simm, x_label[rd], x[rs1], simm, data);
-
+        fprintf(files.output, "0x%08x:slti   %s,%s,%d  %s=0x%08x<%d=0x%08x\n",
+                pc, x_label[rd], x_label[rs1], simm, x_label[rd], x[rs1], simm,
+                data);
         loadRd(data, rd, x);
       }
       // sltiu
@@ -177,7 +215,9 @@ int main(int argc, char *argv[]) {
         printf("0x%08x:sltiu   %s,%s,%d  %s=0x%08x<%d=0x%08x\n", pc,
                x_label[rd], x_label[rs1], simm, x_label[rd], x[rs1], simm,
                data);
-
+        fprintf(files.output, "0x%08x:sltiu   %s,%s,%d  %s=0x%08x<%d=0x%08x\n",
+                pc, x_label[rd], x_label[rs1], simm, x_label[rd], x[rs1], simm,
+                data);
         loadRd(data, rd, x);
       }
       // srli
@@ -187,7 +227,9 @@ int main(int argc, char *argv[]) {
         printf("0x%08x:srli   %s,%s,%d  %s=0x%08x>>%d=0x%08x\n", pc,
                x_label[rd], x_label[rs1], uimm, x_label[rd], x[rs1], uimm,
                data);
-
+        fprintf(files.output, "0x%08x:srli   %s,%s,%d  %s=0x%08x>>%d=0x%08x\n",
+                pc, x_label[rd], x_label[rs1], uimm, x_label[rd], x[rs1], uimm,
+                data);
         loadRd(data, rd, x);
       }
       // srai
@@ -197,7 +239,9 @@ int main(int argc, char *argv[]) {
         printf("0x%08x:srai   %s,%s,%d  %s=0x%08x>>%d=0x%08x\n", pc,
                x_label[rd], x_label[rs1], uimm, x_label[rd], x[rs1], uimm,
                data);
-
+        fprintf(files.output, "0x%08x:srai   %s,%s,%d  %s=0x%08x>>%d=0x%08x\n",
+                pc, x_label[rd], x_label[rs1], uimm, x_label[rd], x[rs1], uimm,
+                data);
         loadRd(data, rd, x);
       }
       break;
@@ -207,7 +251,8 @@ int main(int argc, char *argv[]) {
 
       printf("0x%08x:lui    %s,0x%08x   %s=0x%08x\n", pc, x_label[rd],
              (immU >> 12), x_label[rd], data);
-
+      fprintf(files.output, "0x%08x:lui    %s,0x%08x   %s=0x%08x\n", pc,
+              x_label[rd], (immU >> 12), x_label[rd], data);
       loadRd(data, rd, x);
       break;
     case 0b0010111: // AUIPC
@@ -216,7 +261,8 @@ int main(int argc, char *argv[]) {
 
       printf("0x%08x:auipc    %s,0x%08x   %s=0x%08x\n", pc, x_label[rd],
              (immU >> 12), x_label[rd], data);
-
+      fprintf(files.output, "0x%08x:auipc    %s,0x%08x   %s=0x%08x\n", pc,
+              x_label[rd], (immU >> 12), x_label[rd], data);
       loadRd(data, rd, x);
       break;
     case 0b0000011: // L-Type
@@ -224,65 +270,75 @@ int main(int argc, char *argv[]) {
       if (funct3 == 0b000) {
         const int32_t simm = signedImmediate(imm);
         const uint32_t address = x[rs1] + simm;
-        const uint32_t index = address;
+        const uint32_t index = address - offset;
         const int8_t byte = mem[index];
         const int32_t data = (int8_t)byte;
 
         printf("0x%08x:lb    %s,0x%08x(%s)   %s=mem[0x%08x]=0x%08x\n", pc,
                x_label[rd], imm, x_label[rs1], x_label[rd], address, data);
-
+        fprintf(files.output,
+                "0x%08x:lb    %s,0x%08x(%s)   %s=mem[0x%08x]=0x%08x\n", pc,
+                x_label[rd], imm, x_label[rs1], x_label[rd], address, data);
         loadRd(data, rd, x);
       }
       // lh
       else if (funct3 == 0b001) {
         const int32_t simm = signedImmediate(imm);
         const uint32_t address = x[rs1] + simm;
-        const uint32_t index = address;
+        const uint32_t index = address - offset;
         const int16_t halfWord = mem[index] | (mem[index + 1] << 8);
         const int32_t data = (int16_t)halfWord;
 
         printf("0x%08x:lh    %s,0x%08x(%s)   %s=mem[0x%08x]=0x%08x\n", pc,
                x_label[rd], imm, x_label[rs1], x_label[rd], address, data);
-
+        fprintf(files.output,
+                "0x%08x:lh    %s,0x%08x(%s)   %s=mem[0x%08x]=0x%08x\n", pc,
+                x_label[rd], imm, x_label[rs1], x_label[rd], address, data);
         loadRd(data, rd, x);
       }
       // lbu
       else if (funct3 == 0b100) {
         const int32_t simm = signedImmediate(imm);
         const uint32_t address = x[rs1] + simm;
-        const uint32_t index = address;
+        const uint32_t index = address - offset;
         const uint8_t byte = mem[index];
         const uint32_t data = (uint8_t)byte;
 
         printf("0x%08x:lbu    %s,0x%08x(%s)   %s=mem[0x%08x]=0x%08x\n", pc,
                x_label[rd], imm, x_label[rs1], x_label[rd], address, data);
-
+        fprintf(files.output,
+                "0x%08x:lbu    %s,0x%08x(%s)   %s=mem[0x%08x]=0x%08x\n", pc,
+                x_label[rd], imm, x_label[rs1], x_label[rd], address, data);
         loadRd(data, rd, x);
       }
       // lhu
       else if (funct3 == 0b101) {
         const int32_t simm = signedImmediate(imm);
         const uint32_t address = x[rs1] + simm;
-        const uint32_t index = address;
+        const uint32_t index = address - offset;
         const uint16_t halfWord = mem[index] | (mem[index + 1] << 8);
         const uint32_t data = (uint16_t)halfWord;
 
         printf("0x%08x:lhu    %s,0x%08x(%s)   %s=mem[0x%08x]=0x%08x\n", pc,
                x_label[rd], imm, x_label[rs1], x_label[rd], address, data);
-
+        fprintf(files.output,
+                "0x%08x:lhu    %s,0x%08x(%s)   %s=mem[0x%08x]=0x%08x\n", pc,
+                x_label[rd], imm, x_label[rs1], x_label[rd], address, data);
         loadRd(data, rd, x);
       }
       // lw
       else if (funct3 == 0b010) {
         const uint32_t simm = signedImmediate(imm);
         const uint32_t address = x[rs1] + simm;
-        const uint32_t index = address;
+        const uint32_t index = address - offset;
         const uint32_t data = mem[index] | (mem[index + 1] << 8) |
                               (mem[index + 2] << 16) | (mem[index + 3] << 24);
 
         printf("0x%08x:lw    %s,0x%08x(%s)   %s=mem[0x%08x]=0x%08x\n", pc,
                x_label[rd], imm, x_label[rs1], x_label[rd], address, data);
-
+        fprintf(files.output,
+                "0x%08x:lw    %s,0x%08x(%s)   %s=mem[0x%08x]=0x%08x\n", pc,
+                x_label[rd], imm, x_label[rs1], x_label[rd], address, data);
         loadRd(data, rd, x);
       }
       break;
@@ -294,11 +350,17 @@ int main(int argc, char *argv[]) {
         uint32_t address = x[rs1] + simm;
         address = address & ~1;
 
-        printf("0x%08x:jalr    %s,%s,0x%08x   %s=0x%08x+0x%08x,%s=0x%08x", pc,
-               x_label[rd], x_label[rs1], imm, x_label[pc], x[rs1], simm,
-               x_label[rd], data);
+        printf("0x%08x:jalr     %s,%s,0x%08x    pc=0x%08x+0x%08x,%s=0x%08x\n",
+               pc, x_label[rd], x_label[rs1], simm, x[rs1], simm, x_label[rd],
+               data);
+        fprintf(files.output,
+                "0x%08x:jalr     %s,%s,0x%08x    pc=0x%08x+0x%08x,%s=0x%08x\n",
+                pc, x_label[rd], x_label[rs1], simm, x[rs1], simm, x_label[rd],
+                data);
 
         loadRd(data, rd, x);
+
+        pc = address - 4;
       }
       break;
     case 0b0100011: // S-Type
@@ -307,7 +369,7 @@ int main(int argc, char *argv[]) {
         const int32_t simm = signedImmediate(immS);
         const uint32_t address = x[rs1] + simm;
         const int32_t data = x[rs2];
-        const uint32_t index = address;
+        const uint32_t index = address - offset;
 
         mem[index + 0] = (data >> 0) & 0xFF;
         mem[index + 1] = (data >> 8) & 0xFF;
@@ -316,31 +378,40 @@ int main(int argc, char *argv[]) {
 
         printf("0x%08x:sw    %s,0x%08x(%s)   mem[0x%08x]=0x%08x\n", pc,
                x_label[rs2], imm, x_label[rs1], address, data);
+        fprintf(files.output,
+                "0x%08x:sw    %s,0x%08x(%s)   mem[0x%08x]=0x%08x\n", pc,
+                x_label[rs2], imm, x_label[rs1], address, data);
       }
       // sh
       else if (funct3 == 0b001) {
         const int32_t simm = signedImmediate(immS);
         const uint32_t address = x[rs1] + simm;
         const int32_t data = x[rs2];
-        const uint32_t index = address;
+        const uint32_t index = address - offset;
 
         mem[index + 0] = (data >> 0) & 0xFF;
         mem[index + 1] = (data >> 8) & 0xFF;
 
         printf("0x%08x:sh    %s,0x%08x(%s)   mem[0x%08x]=0x%08x\n", pc,
                x_label[rs2], imm, x_label[rs1], address, data);
+        fprintf(files.output,
+                "0x%08x:sh    %s,0x%08x(%s)   mem[0x%08x]=0x%08x\n", pc,
+                x_label[rs2], imm, x_label[rs1], address, data);
       }
       // sb
       else if (funct3 == 0b000) {
         const int32_t simm = signedImmediate(immS);
         const uint32_t address = x[rs1] + simm;
         const int32_t data = x[rs2];
-        const uint32_t index = address;
+        const uint32_t index = address - offset;
 
         mem[index + 0] = (data >> 0) & 0xFF;
 
         printf("0x%08x:sb    %s,0x%08x(%s)   mem[0x%08x]=0x%08x\n", pc,
                x_label[rs2], imm, x_label[rs1], address, data);
+        fprintf(files.output,
+                "0x%08x:sb    %s,0x%08x(%s)   mem[0x%08x]=0x%08x\n", pc,
+                x_label[rs2], imm, x_label[rs1], address, data);
       }
       break;
 
@@ -352,7 +423,10 @@ int main(int argc, char *argv[]) {
         printf("0x%08x:add   %s,%s,%s  %s=0x%08x+0x%08x=0x%08x\n", pc,
                x_label[rd], x_label[rs1], x_label[rs2], x_label[rd], x[rs1],
                x[rs2], data);
-
+        fprintf(files.output,
+                "0x%08x:add   %s,%s,%s  %s=0x%08x+0x%08x=0x%08x\n", pc,
+                x_label[rd], x_label[rs1], x_label[rs2], x_label[rd], x[rs1],
+                x[rs2], data);
         loadRd(data, rd, x);
       }
       // sub
@@ -362,7 +436,10 @@ int main(int argc, char *argv[]) {
         printf("0x%08x:sub   %s,%s,%s  %s=0x%08x-0x%08x=0x%08x\n", pc,
                x_label[rd], x_label[rs1], x_label[rs2], x_label[rd], x[rs1],
                x[rs2], data);
-
+        fprintf(files.output,
+                "0x%08x:sub   %s,%s,%s  %s=0x%08x-0x%08x=0x%08x\n", pc,
+                x_label[rd], x_label[rs1], x_label[rs2], x_label[rd], x[rs1],
+                x[rs2], data);
         loadRd(data, rd, x);
       }
       // xor
@@ -372,7 +449,10 @@ int main(int argc, char *argv[]) {
         printf("0x%08x:xor    %s,%s,%s   %s=0x%08x^0x%08x=0x%08x\n", pc,
                x_label[rd], x_label[rs1], x_label[rs2], x_label[rd], x[rs1],
                x[rs2], data);
-
+        fprintf(files.output,
+                "0x%08x:xor    %s,%s,%s   %s=0x%08x^0x%08x=0x%08x\n", pc,
+                x_label[rd], x_label[rs1], x_label[rs2], x_label[rd], x[rs1],
+                x[rs2], data);
         loadRd(data, rd, x);
       }
       // or
@@ -382,7 +462,10 @@ int main(int argc, char *argv[]) {
         printf("0x%08x:or    %s,%s,%s   %s=0x%08x|0x%08x=0x%08x\n", pc,
                x_label[rd], x_label[rs1], x_label[rs2], x_label[rd], x[rs1],
                x[rs2], data);
-
+        fprintf(files.output,
+                "0x%08x:or    %s,%s,%s   %s=0x%08x|0x%08x=0x%08x\n", pc,
+                x_label[rd], x_label[rs1], x_label[rs2], x_label[rd], x[rs1],
+                x[rs2], data);
         loadRd(data, rd, x);
       }
       // and
@@ -392,7 +475,10 @@ int main(int argc, char *argv[]) {
         printf("0x%08x:and    %s,%s,%s   %s=0x%08x&0x%08x=0x%08x\n", pc,
                x_label[rd], x_label[rs1], x_label[rs2], x_label[rd], x[rs1],
                x[rs2], data);
-
+        fprintf(files.output,
+                "0x%08x:and    %s,%s,%s   %s=0x%08x&0x%08x=0x%08x\n", pc,
+                x_label[rd], x_label[rs1], x_label[rs2], x_label[rd], x[rs1],
+                x[rs2], data);
         loadRd(data, rd, x);
       }
       // slt
@@ -402,7 +488,10 @@ int main(int argc, char *argv[]) {
         printf("0x%08x:slt    %s,%s,%s   %s=0x%08x<0x%08x=0x%08x\n", pc,
                x_label[rd], x_label[rs1], x_label[rs2], x_label[rd], x[rs1],
                x[rs2], data);
-
+        fprintf(files.output,
+                "0x%08x:slt    %s,%s,%s   %s=0x%08x<0x%08x=0x%08x\n", pc,
+                x_label[rd], x_label[rs1], x_label[rs2], x_label[rd], x[rs1],
+                x[rs2], data);
         loadRd(data, rd, x);
       }
       // sltu
@@ -412,7 +501,10 @@ int main(int argc, char *argv[]) {
         printf("0x%08x:sltu    %s,%s,%s   %s=0x%08x<0x%08x=0x%08x\n", pc,
                x_label[rd], x_label[rs1], x_label[rs2], x_label[rd], x[rs1],
                x[rs2], data);
-
+        fprintf(files.output,
+                "0x%08x:sltu    %s,%s,%s   %s=0x%08x<0x%08x=0x%08x\n", pc,
+                x_label[rd], x_label[rs1], x_label[rs2], x_label[rd], x[rs1],
+                x[rs2], data);
         loadRd(data, rd, x);
       }
       // sll
@@ -423,7 +515,10 @@ int main(int argc, char *argv[]) {
         printf("0x%08x:sll    %s,%s,%s   %s=0x%08x<<0x%08x=0x%08x\n", pc,
                x_label[rd], x_label[rs1], x_label[rs2], x_label[rd], x[rs1],
                x[rs2], data);
-
+        fprintf(files.output,
+                "0x%08x:sll    %s,%s,%s   %s=0x%08x<<0x%08x=0x%08x\n", pc,
+                x_label[rd], x_label[rs1], x_label[rs2], x_label[rd], x[rs1],
+                x[rs2], data);
         loadRd(data, rd, x);
       }
       // srl
@@ -434,7 +529,10 @@ int main(int argc, char *argv[]) {
         printf("0x%08x:srl    %s,%s,%s   %s=0x%08x>>0x%08x=0x%08x\n", pc,
                x_label[rd], x_label[rs1], x_label[rs2], x_label[rd], x[rs1],
                x[rs2], data);
-
+        fprintf(files.output,
+                "0x%08x:srl    %s,%s,%s   %s=0x%08x>>0x%08x=0x%08x\n", pc,
+                x_label[rd], x_label[rs1], x_label[rs2], x_label[rd], x[rs1],
+                x[rs2], data);
         loadRd(data, rd, x);
       }
       // sra
@@ -445,7 +543,10 @@ int main(int argc, char *argv[]) {
         printf("0x%08x:sra    %s,%s,%s   %s=0x%08x>>>0x%08x=0x%08x\n", pc,
                x_label[rd], x_label[rs1], x_label[rs2], x_label[rd], x[rs1],
                x[rs2], data);
-
+        fprintf(files.output,
+                "0x%08x:sra    %s,%s,%s   %s=0x%08x>>>0x%08x=0x%08x\n", pc,
+                x_label[rd], x_label[rs1], x_label[rs2], x_label[rd], x[rs1],
+                x[rs2], data);
         loadRd(data, rd, x);
       }
       // mul
@@ -458,7 +559,10 @@ int main(int argc, char *argv[]) {
         printf("0x%08x:mul   %s,%s,%s  %s=0x%08x*0x%08x=0x%08x\n", pc,
                x_label[rd], x_label[rs1], x_label[rs2], x_label[rd], x[rs1],
                x[rs2], data);
-
+        fprintf(files.output,
+                "0x%08x:mul   %s,%s,%s  %s=0x%08x*0x%08x=0x%08x\n", pc,
+                x_label[rd], x_label[rs1], x_label[rs2], x_label[rd], x[rs1],
+                x[rs2], data);
         loadRd(data, rd, x);
       }
       // mulh
@@ -471,7 +575,10 @@ int main(int argc, char *argv[]) {
         printf("0x%08x:mulh   %s,%s,%s  %s=0x%08x*0x%08x=0x%08x\n", pc,
                x_label[rd], x_label[rs1], x_label[rs2], x_label[rd], x[rs1],
                x[rs2], data);
-
+        fprintf(files.output,
+                "0x%08x:mulh   %s,%s,%s  %s=0x%08x*0x%08x=0x%08x\n", pc,
+                x_label[rd], x_label[rs1], x_label[rs2], x_label[rd], x[rs1],
+                x[rs2], data);
         loadRd(data, rd, x);
       }
       // mulhsu
@@ -484,7 +591,10 @@ int main(int argc, char *argv[]) {
         printf("0x%08x:mulhsu   %s,%s,%s  %s=0x%08x*0x%08x=0x%08x\n", pc,
                x_label[rd], x_label[rs1], x_label[rs2], x_label[rd], x[rs1],
                x[rs2], data);
-
+        fprintf(files.output,
+                "0x%08x:mulhsu   %s,%s,%s  %s=0x%08x*0x%08x=0x%08x\n", pc,
+                x_label[rd], x_label[rs1], x_label[rs2], x_label[rd], x[rs1],
+                x[rs2], data);
         loadRd(data, rd, x);
       }
       // mulhu
@@ -497,7 +607,10 @@ int main(int argc, char *argv[]) {
         printf("0x%08x:mulhu   %s,%s,%s  %s=0x%08x*0x%08x=0x%08x\n", pc,
                x_label[rd], x_label[rs1], x_label[rs2], x_label[rd], x[rs1],
                x[rs2], data);
-
+        fprintf(files.output,
+                "0x%08x:mulhu   %s,%s,%s  %s=0x%08x*0x%08x=0x%08x\n", pc,
+                x_label[rd], x_label[rs1], x_label[rs2], x_label[rd], x[rs1],
+                x[rs2], data);
         loadRd(data, rd, x);
       }
       // div
@@ -515,7 +628,10 @@ int main(int argc, char *argv[]) {
         printf("0x%08x:div   %s,%s,%s  %s=0x%08x/0x%08x=0x%08x\n", pc,
                x_label[rd], x_label[rs1], x_label[rs2], x_label[rd], x[rs1],
                x[rs2], data);
-
+        fprintf(files.output,
+                "0x%08x:div   %s,%s,%s  %s=0x%08x/0x%08x=0x%08x\n", pc,
+                x_label[rd], x_label[rs1], x_label[rs2], x_label[rd], x[rs1],
+                x[rs2], data);
         loadRd(data, rd, x);
       }
       // divu
@@ -533,7 +649,10 @@ int main(int argc, char *argv[]) {
         printf("0x%08x:divu   %s,%s,%s  %s=0x%08x/0x%08x=0x%08x\n", pc,
                x_label[rd], x_label[rs1], x_label[rs2], x_label[rd], x[rs1],
                x[rs2], data);
-
+        fprintf(files.output,
+                "0x%08x:divu   %s,%s,%s  %s=0x%08x/0x%08x=0x%08x\n", pc,
+                x_label[rd], x_label[rs1], x_label[rs2], x_label[rd], x[rs1],
+                x[rs2], data);
         loadRd(data, rd, x);
       }
       // rem
@@ -551,7 +670,10 @@ int main(int argc, char *argv[]) {
         printf("0x%08x:rem   %s,%s,%s  %s=0x%08x%%0x%08x=0x%08x\n", pc,
                x_label[rd], x_label[rs1], x_label[rs2], x_label[rd], x[rs1],
                x[rs2], data);
-
+        fprintf(files.output,
+                "0x%08x:rem   %s,%s,%s  %s=0x%08x%%0x%08x=0x%08x\n", pc,
+                x_label[rd], x_label[rs1], x_label[rs2], x_label[rd], x[rs1],
+                x[rs2], data);
         loadRd(data, rd, x);
       }
       // remu
@@ -569,7 +691,10 @@ int main(int argc, char *argv[]) {
         printf("0x%08x:remu   %s,%s,%s  %s=0x%08x%%0x%08x=0x%08x\n", pc,
                x_label[rd], x_label[rs1], x_label[rs2], x_label[rd], x[rs1],
                x[rs2], data);
-
+        fprintf(files.output,
+                "0x%08x:remu   %s,%s,%s  %s=0x%08x%%0x%08x=0x%08x\n", pc,
+                x_label[rd], x_label[rs1], x_label[rs2], x_label[rd], x[rs1],
+                x[rs2], data);
         loadRd(data, rd, x);
       }
       break;
@@ -577,6 +702,11 @@ int main(int argc, char *argv[]) {
       if (funct3 == 0b000) { // beq
         if (x[rs1] == x[rs2]) {
           printf(
+              "0x%08x:beq    %s,%s,0x%08x   (0x%08x==0x%08x)=u1->pc=0x%08x\n",
+              pc, x_label[rs1], x_label[rs2], pc + branchImm, x[rs1], x[rs2],
+              pc + branchImm);
+          fprintf(
+              files.output,
               "0x%08x:beq    %s,%s,0x%08x   (0x%08x==0x%08x)=u1->pc=0x%08x\n",
               pc, x_label[rs1], x_label[rs2], pc + branchImm, x[rs1], x[rs2],
               pc + branchImm);
@@ -589,20 +719,41 @@ int main(int argc, char *argv[]) {
               "0x%08x:bne    %s,%s,0x%08x   (0x%08x!=0x%08x)=u1->pc=0x%08x\n",
               pc, x_label[rs1], x_label[rs2], pc + branchImm, x[rs1], x[rs2],
               pc + branchImm);
+          fprintf(
+              files.output,
+              "0x%08x:bne    %s,%s,0x%08x   (0x%08x!=0x%08x)=u1->pc=0x%08x\n",
+              pc, x_label[rs1], x_label[rs2], pc + branchImm, x[rs1], x[rs2],
+              pc + branchImm);
 
           pc += branchImm - 4;
         }
       } else if (funct3 == 0b100) { // blt
         if ((int32_t)x[rs1] < (int32_t)x[rs2]) {
+
+          uint32_t targetAddress = pc + branchImm;
+          printf("DEBUG BLT: pc=0x%08x, branchImm=%d (0x%x), target=0x%08x\n",
+                 pc, branchImm, branchImm, targetAddress);
+
           printf("0x%08x:blt    %s,%s,0x%08x   (0x%08x<0x%08x)=u1->pc=0x%08x\n",
                  pc, x_label[rs1], x_label[rs2], pc + branchImm, x[rs1], x[rs2],
                  pc + branchImm);
+
+          fprintf(
+              files.output,
+              "0x%08x:blt    %s,%s,0x%08x   (0x%08x<0x%08x)=u1->pc=0x%08x\n",
+              pc, x_label[rs1], x_label[rs2], pc + branchImm, x[rs1], x[rs2],
+              pc + branchImm);
 
           pc += branchImm - 4;
         }
       } else if (funct3 == 0b101) { // bge
         if ((int32_t)x[rs1] >= (int32_t)x[rs2]) {
           printf(
+              "0x%08x:bge    %s,%s,0x%08x   (0x%08x>=0x%08x)=u1->pc=0x%08x\n",
+              pc, x_label[rs1], x_label[rs2], pc + branchImm, x[rs1], x[rs2],
+              pc + branchImm);
+          fprintf(
+              files.output,
               "0x%08x:bge    %s,%s,0x%08x   (0x%08x>=0x%08x)=u1->pc=0x%08x\n",
               pc, x_label[rs1], x_label[rs2], pc + branchImm, x[rs1], x[rs2],
               pc + branchImm);
@@ -615,12 +766,22 @@ int main(int argc, char *argv[]) {
               "0x%08x:bltu    %s,%s,0x%08x   (0x%08x<0x%08x)=u1->pc=0x%08x\n",
               pc, x_label[rs1], x_label[rs2], pc + branchImm, x[rs1], x[rs2],
               pc + branchImm);
+          fprintf(
+              files.output,
+              "0x%08x:bltu    %s,%s,0x%08x   (0x%08x<0x%08x)=u1->pc=0x%08x\n",
+              pc, x_label[rs1], x_label[rs2], pc + branchImm, x[rs1], x[rs2],
+              pc + branchImm);
 
           pc += branchImm - 4;
         }
       } else if (funct3 == 0b111) { // bgeu
         if (x[rs1] >= x[rs2]) {
           printf(
+              "0x%08x:bgeu    %s,%s,0x%08x   (0x%08x>=0x%08x)=u1->pc=0x%08x\n",
+              pc, x_label[rs1], x_label[rs2], pc + branchImm, x[rs1], x[rs2],
+              pc + branchImm);
+          fprintf(
+              files.output,
               "0x%08x:bgeu    %s,%s,0x%08x   (0x%08x>=0x%08x)=u1->pc=0x%08x\n",
               pc, x_label[rs1], x_label[rs2], pc + branchImm, x[rs1], x[rs2],
               pc + branchImm);
@@ -633,25 +794,35 @@ int main(int argc, char *argv[]) {
       // ebreak
       if (funct3 == 0b000 && imm == 1) {
         printf("0x%08x:ebreak\n", pc);
+        fprintf(files.output, "0x%08x:ebreak\n", pc);
         run = 0;
       }
       break;
-    case 0b1101111:
-      // jal
+    case 0b1101111: { // jal
       const uint32_t simm = (imm20 >> 19) ? (0xFFF00000 | imm20) : (imm20);
       const uint32_t address = pc + (simm << 1);
+
       printf("0x%08x:jal    %s,0x%05x    pc=0x%08x,%s=0x%08x\n", pc,
              x_label[rd], imm, address, x_label[rd], pc + 4);
+
+      fprintf(files.output, "0x%08x:jal    %s,0x%05x    pc=0x%08x,%s=0x%08x\n",
+              pc, x_label[rd], imm, address, x_label[rd], pc + 4);
+
       if (rd != 0)
         x[rd] = pc + 4;
       pc = address - 4;
-      break;
+    } break;
     default:
       printf("error: unknown instruction opcode at pc = 0x%08x\n", pc);
       run = 0;
     }
     pc = pc + 4;
   }
+
+  fclose(files.input);
+  fclose(files.output);
+  fclose(files.terminalInput);
+  fclose(files.terminalOutput);
 
   return 0;
 }
