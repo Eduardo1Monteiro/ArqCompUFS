@@ -119,9 +119,9 @@ int main(int argc, char *argv[]) {
     const uint32_t imm11 = (instruction & 0x80) << 4;
     const uint32_t imm10_5 = (instruction >> 20) & 0x7E0;
     const uint32_t imm4_1 = (instruction >> 7) & 0x1E;
-
+    const uint32_t csr = (instruction >> 20) & 0xFFF;
+    const uint32_t csrImm = (instruction >> 15) & 0x1F;
     const uint32_t imm_b_unsigned = imm12 | imm11 | imm10_5 | imm4_1;
-
     const int32_t branchImm = (imm_b_unsigned & 0x1000)
                                   ? (0xFFFFE000 | imm_b_unsigned)
                                   : imm_b_unsigned;
@@ -636,11 +636,87 @@ int main(int argc, char *argv[]) {
         pc += branchImm - 4;
       }
       break;
+    // CSR
     case 0b1110011:
       // ebreak
       if (funct3 == 0b000 && imm == 1) {
         fprintf(files.output, "0x%08x:ebreak\n", pc);
         run = 0;
+      }
+      // csrrw
+      if (funct3 == 0b001) {
+        uint32_t data = csr;
+        uint32_t newCsr = rs1;
+
+        fprintf(files.output,
+                "0x%08x:csrrw    %s,%s,%s     rd=csr=0x%08x,csr=rs1=0x%08x\n",
+                pc, x_label[rd], x_label[csr], x_label[rs1], csr, newCsr);
+
+        loadRd(data, rd, x);
+      }
+      // csrrs
+      if (funct3 == 0b010) {
+        uint32_t data = csr;
+        uint32_t newCsr = csr | x[rs1];
+
+        fprintf(files.output,
+                "0x%08x:csrrs    %s,%s,%s     "
+                "rd=csr=0x%08x,csr|=rs1=0x%08x|0x%08x=0x%08x\n",
+                pc, x_label[rd], x_label[csr], x_label[rs1], csr, csr, rs1,
+                newCsr);
+
+        loadRd(data, rd, x);
+      }
+      // csrrc
+      if (funct3 == 0b011) {
+        uint32_t data = csr;
+        uint32_t newCsr = csr & (~rs1);
+
+        fprintf(files.output,
+                "0x%08x:csrrs    %s,%s,%s     "
+                "rd=csr=0x%08x,csr&~=rs1=0x%08x&~0x%08x=0x%08x\n",
+                pc, x_label[rd], x_label[csr], x_label[rs1], csr, csr, rs1,
+                newCsr);
+
+        loadRd(data, rd, x);
+      }
+      // csrrwi
+      if (funct3 == 0b101) {
+        uint32_t data = csr;
+        uint32_t newCsr = csrImm;
+
+        fprintf(files.output,
+                "0x%08x:csrrwi    %s,%s,%s     "
+                "rd=csr=0x%08x,csr=u5=0x%08x\n",
+                pc, x_label[rd], x_label[csr], x_label[csrImm], csr, newCsr);
+
+        loadRd(data, rd, x);
+      }
+      // csrrsi
+      if (funct3 == 0b110) {
+        uint32_t data = csr;
+        uint32_t newCsr = csr | (uint32_t)csrImm;
+
+        fprintf(files.output,
+                "0x%08x:csrrs    %s,%s,%s     "
+                "rd=csr=0x%08x,csr|=u5=0x%08x|0x%08x=0x%08x\n",
+                pc, x_label[rd], x_label[csr], x_label[csrImm], csr, csr,
+                (uint32_t)csrImm, newCsr);
+
+        loadRd(data, rd, x);
+      }
+      // csrrci
+      if (funct3 == 0b111) {
+        uint32_t data = csr;
+        uint32_t newCsr = csr & ((uint32_t)~csrImm);
+
+        fprintf(files.output,
+                "0x%08x:csrrs    %s,%s,%s     "
+                "rd=csr=0x%08x,csr&~=u5=0x%08x&~0x%08x=0x%08x\n",
+                pc, x_label[rd], x_label[csr], x_label[csrImm], csr, csr,
+                (uint32_t)csrImm, newCsr);
+
+        loadRd(data, rd, x);
       }
       break;
     case 0b1101111: { // jal
