@@ -66,6 +66,60 @@ void loadRd(uint32_t data, uint8_t rd, uint32_t x[]) {
   }
 }
 
+void triggerException(uint32_t cause, uint32_t tval, uint32_t *pc,
+                      uint32_t *mepc, uint32_t *mcause, uint32_t *mtvec,
+                      uint32_t *mtval) {
+  *mepc = *pc;
+  *mcause = cause;
+  *mtval = tval;
+
+  if (*mtvec != 0) {
+    *pc = *mtvec;
+  } else {
+    *pc += 4;
+  }
+}
+
+uint32_t readCsr(uint16_t address, uint32_t Mepc, uint32_t Mcause,
+                 uint32_t Mtvec, uint32_t Mtval, uint32_t Mstatus) {
+  switch (address) {
+  case 0x300:
+    return Mstatus;
+  case 0x305:
+    return Mtvec;
+  case 0x341:
+    return Mepc;
+  case 0x342:
+    return Mcause;
+  case 0x343:
+    return Mtval;
+  // Adicione outros CSRs aqui se necessário
+  default:
+    return 0;
+  }
+}
+
+void writeCsr(uint16_t address, uint32_t data, uint32_t *Mepc, uint32_t *Mcause,
+              uint32_t *Mtvec, uint32_t *Mtval, uint32_t *Mstatus) {
+  switch (address) {
+  case 0x300:
+    *Mstatus = data;
+    break;
+  case 0x305:
+    *Mtvec = data;
+    break;
+  case 0x341:
+    *Mepc = data;
+    break;
+  case 0x342:
+    *Mcause = data;
+    break;
+  case 0x343:
+    *Mtval = data;
+    break;
+  }
+}
+
 int main(int argc, char *argv[]) {
 
   printf("---------------------------------------------------------------------"
@@ -95,7 +149,41 @@ int main(int argc, char *argv[]) {
 
   uint8_t run = 1;
 
+  // CSR variables
+  uint32_t mepc = 0;    // 0x341: Machine Exception Program Counter
+  uint32_t mcause = 0;  // 0x342: Machine Cause Register
+  uint32_t mtvec = 0;   // 0x305: Machine Trap-Vector Base Address
+  uint32_t mtval = 0;   // 0x343: Machine Trap Value Register
+  uint32_t mstatus = 0; // 0x300: Machine Status Register
+  uint32_t mie = 0;
+  uint32_t mip = 0;
+  uint8_t privilegeLevel = 3;
+
+  // remover isto quando o programa estiver pronto
+  uint64_t cycleCount = 0;
+  const uint64_t MAX_CYCLES = 10000000; // 10 milhões de ciclos
+
   while (run) {
+    // remover isto quando o programa estiver pronto
+    if (cycleCount > MAX_CYCLES) {
+      fprintf(files.output, ">FATAL: Simulation exceeded maximum cycle count. "
+                            "Likely an infinite loop.\n");
+      fprintf(stderr, "FATAL: Simulation exceeded maximum cycle count. Likely "
+                      "an infinite loop.\n");
+      break; // Sai do loop
+    }
+    cycleCount++;
+
+    // Instruction access fault (1)
+    if ((pc < offset) || (pc >= (offset + 32 * 1024 - 3))) {
+      triggerException(1, pc, &pc, &mepc, &mcause, &mtvec, &mtval);
+      fprintf(files.output,
+              ">exception:instruction_fault          "
+              "cause=0x%08x,epc=0x%08x,tval=0x%08x\n",
+              mcause, mepc, mtval);
+      continue;
+    }
+
     // Decoder
     uint32_t instruction = mem[pc - offset] | (mem[pc - offset + 1] << 8) |
                            (mem[pc - offset + 2] << 16) |
@@ -119,9 +207,9 @@ int main(int argc, char *argv[]) {
     const uint32_t imm11 = (instruction & 0x80) << 4;
     const uint32_t imm10_5 = (instruction >> 20) & 0x7E0;
     const uint32_t imm4_1 = (instruction >> 7) & 0x1E;
-    const uint32_t csr = (instruction >> 20) & 0xFFF;
-    const uint32_t csrImm = (instruction >> 15) & 0x1F;
+
     const uint32_t imm_b_unsigned = imm12 | imm11 | imm10_5 | imm4_1;
+
     const int32_t branchImm = (imm_b_unsigned & 0x1000)
                                   ? (0xFFFFE000 | imm_b_unsigned)
                                   : imm_b_unsigned;
@@ -238,10 +326,22 @@ int main(int argc, char *argv[]) {
       break;
     case 0b0000011: // L-Type
       // lb
+      const int32_t simm = signedImmediate(imm);
+      const uint32_t address = x[rs1] + simm;
+
+      // Load access fault (5)
+      if ((address < offset) || (address >= (offset + 32 * 1024))) {
+        triggerException(5, address, &pc, &mepc, &mcause, &mtvec, &mtval);
+        fprintf(files.output,
+                ">exception:load_access_fault           "
+                "cause=0x%08x,epc=0x%08x,tval=0x%08x\n",
+                mcause, mepc, mtval);
+        continue;
+      }
+
+      const uint32_t index = address - offset;
+
       if (funct3 == 0b000) {
-        const int32_t simm = signedImmediate(imm);
-        const uint32_t address = x[rs1] + simm;
-        const uint32_t index = address - offset;
         const int8_t byte = mem[index];
         const int32_t data = (int8_t)byte;
         fprintf(files.output,
@@ -251,9 +351,6 @@ int main(int argc, char *argv[]) {
       }
       // lh
       else if (funct3 == 0b001) {
-        const int32_t simm = signedImmediate(imm);
-        const uint32_t address = x[rs1] + simm;
-        const uint32_t index = address - offset;
         const int16_t halfWord = mem[index] | (mem[index + 1] << 8);
         const int32_t data = (int16_t)halfWord;
         fprintf(files.output,
@@ -263,9 +360,6 @@ int main(int argc, char *argv[]) {
       }
       // lbu
       else if (funct3 == 0b100) {
-        const int32_t simm = signedImmediate(imm);
-        const uint32_t address = x[rs1] + simm;
-        const uint32_t index = address - offset;
         const uint8_t byte = mem[index];
         const uint32_t data = (uint8_t)byte;
         fprintf(files.output,
@@ -275,9 +369,6 @@ int main(int argc, char *argv[]) {
       }
       // lhu
       else if (funct3 == 0b101) {
-        const int32_t simm = signedImmediate(imm);
-        const uint32_t address = x[rs1] + simm;
-        const uint32_t index = address - offset;
         const uint16_t halfWord = mem[index] | (mem[index + 1] << 8);
         const uint32_t data = (uint16_t)halfWord;
         fprintf(files.output,
@@ -287,9 +378,6 @@ int main(int argc, char *argv[]) {
       }
       // lw
       else if (funct3 == 0b010) {
-        const uint32_t simm = signedImmediate(imm);
-        const uint32_t address = x[rs1] + simm;
-        const uint32_t index = address - offset;
         const uint32_t data = mem[index] | (mem[index + 1] << 8) |
                               (mem[index + 2] << 16) | (mem[index + 3] << 24);
         fprintf(files.output,
@@ -316,6 +404,18 @@ int main(int argc, char *argv[]) {
       }
       break;
     case 0b0100011: // S-Type
+      uint32_t testAddress = x[rs1] + signedImmediate(immS);
+
+      // Store access fault (7)
+      if ((testAddress < offset) || (testAddress >= (offset + 32 * 1024))) {
+        triggerException(7, testAddress, &pc, &mepc, &mcause, &mtvec, &mtval);
+        fprintf(files.output,
+                ">exception:store_access_fault          "
+                "cause=0x%08x,epc=0x%08x,tval=0x%08x\n",
+                mcause, mepc, mtval);
+        continue;
+      }
+
       // sw
       if (funct3 == 0b010) {
         const int32_t simm = signedImmediate(immS);
@@ -636,104 +736,83 @@ int main(int argc, char *argv[]) {
         pc += branchImm - 4;
       }
       break;
-    // CSR
-    case 0b1110011:
+    case 0b1110011: { // SYSTEM
+      const uint16_t csrAddress =
+          imm; // O endereço do CSR está nos 12 bits de imm
+      // ecall
+      if (funct3 == 0b000 && csrAddress == 0) {
+        fprintf(files.output, "0x%08x:ecall\n", pc);
+        triggerException(11, pc, &pc, &mepc, &mcause, &mtvec, &mtval);
+        fprintf(files.output,
+                ">exception:environment_call_from_M_mode "
+                "cause=0x%08x,epc=0x%08x,tval=0x%08x\n",
+                mcause, mepc, mtval);
+        continue; // Pula para a próxima iteração para executar o handler
+      }
+      // mret
+      else if (funct3 == 0b000 && csrAddress == 0x302) {
+        fprintf(files.output, "0x%08x:mret\n", pc);
+        // Ao retornar de uma exceção, o PC deve apontar para a instrução
+        // SEGUINTE à que causou a falha para evitar um loop.
+        pc = mepc + 4;
+        continue; // Pula o incremento normal do PC
+      }
       // ebreak
-      if (funct3 == 0b000 && imm == 1) {
+      else if (funct3 == 0b000 && csrAddress == 1) {
         fprintf(files.output, "0x%08x:ebreak\n", pc);
         run = 0;
       }
-      // csrrw
-      if (funct3 == 0b001) {
-        uint32_t data = csr;
-        uint32_t newCsr = rs1;
+      // CSR Instructions
+      else {
+        uint32_t oldCsrValue =
+            readCsr(csrAddress, mepc, mcause, mtvec, mtval, mstatus);
+        uint32_t newCsrValue;
 
-        fprintf(files.output,
-                "0x%08x:csrrw    %s,%s,%s     rd=csr=0x%08x,csr=rs1=0x%08x\n",
-                pc, x_label[rd], x_label[csr], x_label[rs1], csr, newCsr);
+        switch (funct3) {
+        // CSRRW (Atomic Read/Write CSR)
+        case 0b001:
+          newCsrValue = x[rs1];
+          writeCsr(csrAddress, newCsrValue, &mepc, &mcause, &mtvec, &mtval,
+                   &mstatus);
+          loadRd(oldCsrValue, rd, x); // rd recebe o valor *antigo*
+          fprintf(files.output, "0x%08x:csrrw  %s,0x%03x,%s\n", pc, x_label[rd],
+                  csrAddress, x_label[rs1]);
+          break;
 
-        loadRd(data, rd, x);
-      }
-      // csrrs
-      if (funct3 == 0b010) {
-        uint32_t data = csr;
-        uint32_t newCsr = csr | x[rs1];
+        // CSRRS (Atomic Read and Set Bits)
+        case 0b010:
+          newCsrValue = oldCsrValue | x[rs1];
+          loadRd(oldCsrValue, rd, x);
+          if (rs1 != 0) { // A escrita só ocorre se rs1 != 0
+            writeCsr(csrAddress, newCsrValue, &mepc, &mcause, &mtvec, &mtval,
+                     &mstatus);
+          }
+          fprintf(files.output, "0x%08x:csrrs  %s,0x%03x,%s\n", pc, x_label[rd],
+                  csrAddress, x_label[rs1]);
+          break;
 
-        fprintf(files.output,
-                "0x%08x:csrrs    %s,%s,%s     "
-                "rd=csr=0x%08x,csr|=rs1=0x%08x|0x%08x=0x%08x\n",
-                pc, x_label[rd], x_label[csr], x_label[rs1], csr, csr, rs1,
-                newCsr);
+          // Adicione CSRRC, CSRRWI, CSRRSI, CSRRCI aqui se precisar
 
-        loadRd(data, rd, x);
-      }
-      // csrrc
-      if (funct3 == 0b011) {
-        uint32_t data = csr;
-        uint32_t newCsr = csr & (~rs1);
-
-        fprintf(files.output,
-                "0x%08x:csrrs    %s,%s,%s     "
-                "rd=csr=0x%08x,csr&~=rs1=0x%08x&~0x%08x=0x%08x\n",
-                pc, x_label[rd], x_label[csr], x_label[rs1], csr, csr, rs1,
-                newCsr);
-
-        loadRd(data, rd, x);
-      }
-      // csrrwi
-      if (funct3 == 0b101) {
-        uint32_t data = csr;
-        uint32_t newCsr = csrImm;
-
-        fprintf(files.output,
-                "0x%08x:csrrwi    %s,%s,%s     "
-                "rd=csr=0x%08x,csr=u5=0x%08x\n",
-                pc, x_label[rd], x_label[csr], x_label[csrImm], csr, newCsr);
-
-        loadRd(data, rd, x);
-      }
-      // csrrsi
-      if (funct3 == 0b110) {
-        uint32_t data = csr;
-        uint32_t newCsr = csr | (uint32_t)csrImm;
-
-        fprintf(files.output,
-                "0x%08x:csrrs    %s,%s,%s     "
-                "rd=csr=0x%08x,csr|=u5=0x%08x|0x%08x=0x%08x\n",
-                pc, x_label[rd], x_label[csr], x_label[csrImm], csr, csr,
-                (uint32_t)csrImm, newCsr);
-
-        loadRd(data, rd, x);
-      }
-      // csrrci
-      if (funct3 == 0b111) {
-        uint32_t data = csr;
-        uint32_t newCsr = csr & ((uint32_t)~csrImm);
-
-        fprintf(files.output,
-                "0x%08x:csrrs    %s,%s,%s     "
-                "rd=csr=0x%08x,csr&~=u5=0x%08x&~0x%08x=0x%08x\n",
-                pc, x_label[rd], x_label[csr], x_label[csrImm], csr, csr,
-                (uint32_t)csrImm, newCsr);
-
-        loadRd(data, rd, x);
+        default: // Outros funct3 para o opcode SYSTEM são ilegais
+          triggerException(2, instruction, &pc, &mepc, &mcause, &mtvec,
+                           &mtval); // tval agora é a instrução
+          fprintf(files.output,
+                  ">exception:illegal_instruction          "
+                  "cause=0x%08x,epc=0x%08x,tval=0x%08x\n",
+                  mcause, mepc, mtval);
+          continue;
+        }
       }
       break;
-    case 0b1101111: { // jal
-      const uint32_t simm = (imm20 >> 19) ? (0xFFF00000 | imm20) : (imm20);
-      const uint32_t address = pc + (simm << 1);
-      int32_t imm_to_print = jalOffset / 2;
-      fprintf(files.output, "0x%08x:jal    %s,0x%05x    pc=0x%08x,%s=0x%08x\n",
-              pc, x_label[rd], imm_to_print & 0xFFFFF, address, x_label[rd],
-              pc + 4);
-
-      if (rd != 0)
-        x[rd] = pc + 4;
-      pc = address - 4;
-    } break;
+    }
+    // Illegal instruction (2)
     default:
-      printf("error: unknown instruction opcode at pc = 0x%08x\n", pc);
-      run = 0;
+      triggerException(2, instruction, &pc, &mepc, &mcause, &mtvec, &mtval);
+      fprintf(files.output,
+              ">exception:illegal_instruction        "
+              "cause=0x%08x,epc=0x%08x,tval=0x%08x\n",
+              mcause, mepc, mtval);
+      continue;
     }
     pc = pc + 4;
   }
