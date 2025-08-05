@@ -2,6 +2,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+// Definições do Mapa de Memória para Dispositivos de E/S
+#define CLINT_BASE 0x02000000
+#define CLINT_MSIP (CLINT_BASE + 0x0)
+
 typedef struct {
   FILE *input;
   FILE *output;
@@ -68,15 +72,22 @@ void loadRd(uint32_t data, uint8_t rd, uint32_t x[]) {
 
 void triggerException(uint32_t cause, uint32_t tval, uint32_t *pc,
                       uint32_t *mepc, uint32_t *mcause, uint32_t *mtvec,
-                      uint32_t *mtval) {
+                      uint32_t *mtval, uint32_t *mstatus) {
   *mepc = *pc;
   *mcause = cause;
   *mtval = tval;
 
-  if (*mtvec != 0) {
-    *pc = *mtvec;
+  uint32_t mie = (*mstatus >> 3) & 1;
+  *mstatus &= ~(1 << 7);
+  *mstatus |= (mie << 7);
+  *mstatus &= ~(1 << 3);
+
+  if ((*mtvec & 0x1) && (cause & 0x80000000)) {
+    uint32_t base = *mtvec & ~0x3;
+    uint32_t cause_num = cause & 0x7FFFFFFF;
+    *pc = base + (4 * cause_num);
   } else {
-    *pc += 4;
+    *pc = *mtvec & ~0x3;
   }
 }
 
@@ -84,6 +95,8 @@ const char *getCsrName(uint16_t address) {
   switch (address) {
   case 0x300:
     return "mstatus";
+  case 0x304:
+    return "mie";
   case 0x305:
     return "mtvec";
   case 0x341:
@@ -92,16 +105,21 @@ const char *getCsrName(uint16_t address) {
     return "mcause";
   case 0x343:
     return "mtval";
+  case 0x344:
+    return "mip";
   default:
     return "unknown_csr";
   }
 }
 
 uint32_t readCsr(uint16_t address, uint32_t mepc, uint32_t mcause,
-                 uint32_t mtvec, uint32_t mtval, uint32_t mstatus) {
+                 uint32_t mtvec, uint32_t mtval, uint32_t mstatus, uint32_t mie,
+                 uint32_t mip) {
   switch (address) {
   case 0x300:
     return mstatus;
+  case 0x304:
+    return mie;
   case 0x305:
     return mtvec;
   case 0x341:
@@ -110,16 +128,22 @@ uint32_t readCsr(uint16_t address, uint32_t mepc, uint32_t mcause,
     return mcause;
   case 0x343:
     return mtval;
+  case 0x344:
+    return mip;
   default:
     return 0;
   }
 }
 
 void writeCsr(uint16_t address, uint32_t data, uint32_t *mepc, uint32_t *mcause,
-              uint32_t *mtvec, uint32_t *mtval, uint32_t *mstatus) {
+              uint32_t *mtvec, uint32_t *mtval, uint32_t *mstatus,
+              uint32_t *mie, uint32_t *mip) {
   switch (address) {
   case 0x300:
     *mstatus = data;
+    break;
+  case 0x304:
+    *mie = data;
     break;
   case 0x305:
     *mtvec = data;
@@ -132,6 +156,9 @@ void writeCsr(uint16_t address, uint32_t data, uint32_t *mepc, uint32_t *mcause,
     break;
   case 0x343:
     *mtval = data;
+    break;
+  case 0x344:
+    *mip = data;
     break;
   }
 }
@@ -165,15 +192,33 @@ int main(int argc, char *argv[]) {
 
   uint8_t run = 1;
 
-  uint32_t mepc = 0;
-  uint32_t mcause = 0;
-  uint32_t mtvec = 0;
-  uint32_t mtval = 0;
-  uint32_t mstatus = 0;
+  uint32_t mepc = 0, mcause = 0, mtvec = 0, mtval = 0, mstatus = 0, mie = 0,
+           mip = 0;
+
+  uint32_t clintMsip = 0;
 
   while (run) {
+    if (clintMsip > 0) {
+      mip |= (1 << 3);
+    } else {
+      mip &= ~(1 << 3);
+    }
+
+    uint32_t pendingAndEnabled = mip & mie;
+    uint32_t globalInterruptEnable = (mstatus >> 3) & 1;
+
+    if (globalInterruptEnable && (pendingAndEnabled & (1 << 3))) {
+      triggerException(0x80000003, 0, &pc, &mepc, &mcause, &mtvec, &mtval,
+                       &mstatus);
+      fprintf(files.output,
+              ">interrupt:software                  "
+              "cause=0x%08x,epc=0x%08x,tval=0x%08x\n",
+              mcause, mepc, mtval);
+      continue;
+    }
+
     if ((pc < offset) || (pc >= (offset + 32 * 1024 - 3))) {
-      triggerException(1, pc, &pc, &mepc, &mcause, &mtvec, &mtval);
+      triggerException(1, pc, &pc, &mepc, &mcause, &mtvec, &mtval, &mstatus);
       fprintf(files.output,
               ">exception:instruction_fault          "
               "cause=0x%08x,epc=0x%08x,tval=0x%08x\n",
@@ -304,52 +349,34 @@ int main(int argc, char *argv[]) {
     case 0b0000011: { // L-Type
       const int32_t simm = signedImmediate(imm);
       const uint32_t address = x[rs1] + simm;
+      uint32_t data = 0;
 
-      if ((address < offset) || (address >= (offset + 32 * 1024))) {
-        triggerException(5, address, &pc, &mepc, &mcause, &mtvec, &mtval);
+      if (address == CLINT_MSIP) {
+        data = clintMsip;
+      } else if (address >= offset && address < (offset + 32 * 1024)) {
+        const uint32_t index = address - offset;
+        if (funct3 == 0b000) { // lb
+          data = (int8_t)mem[index];
+        } else if (funct3 == 0b001) { // lh
+          data = (int16_t)(mem[index] | (mem[index + 1] << 8));
+        } else if (funct3 == 0b100) { // lbu
+          data = mem[index];
+        } else if (funct3 == 0b101) { // lhu
+          data = mem[index] | (mem[index + 1] << 8);
+        } else if (funct3 == 0b010) { // lw
+          data = mem[index] | (mem[index + 1] << 8) | (mem[index + 2] << 16) |
+                 (mem[index + 3] << 24);
+        }
+      } else {
+        triggerException(5, address, &pc, &mepc, &mcause, &mtvec, &mtval,
+                         &mstatus);
         fprintf(files.output,
-                ">exception:load_fault           "
+                ">exception:load_fault                 "
                 "cause=0x%08x,epc=0x%08x,tval=0x%08x\n",
                 mcause, mepc, mtval);
         continue;
       }
-      const uint32_t index = address - offset;
-      if (funct3 == 0b000) {
-        const int8_t byte = mem[index];
-        const int32_t data = (int8_t)byte;
-        fprintf(files.output,
-                "0x%08x:lb     %s,0x%03x(%s)   %s=mem[0x%08x]=0x%08x\n", pc,
-                x_label[rd], imm, x_label[rs1], x_label[rd], address, data);
-        loadRd(data, rd, x);
-      } else if (funct3 == 0b001) {
-        const int16_t halfWord = mem[index] | (mem[index + 1] << 8);
-        const int32_t data = (int16_t)halfWord;
-        fprintf(files.output,
-                "0x%08x:lh     %s,0x%03x(%s)   %s=mem[0x%08x]=0x%08x\n", pc,
-                x_label[rd], imm, x_label[rs1], x_label[rd], address, data);
-        loadRd(data, rd, x);
-      } else if (funct3 == 0b100) {
-        const uint8_t byte = mem[index];
-        const uint32_t data = (uint8_t)byte;
-        fprintf(files.output,
-                "0x%08x:lbu    %s,0x%03x(%s)   %s=mem[0x%08x]=0x%08x\n", pc,
-                x_label[rd], imm, x_label[rs1], x_label[rd], address, data);
-        loadRd(data, rd, x);
-      } else if (funct3 == 0b101) {
-        const uint16_t halfWord = mem[index] | (mem[index + 1] << 8);
-        const uint32_t data = (uint16_t)halfWord;
-        fprintf(files.output,
-                "0x%08x:lhu    %s,0x%03x(%s)   %s=mem[0x%08x]=0x%08x\n", pc,
-                x_label[rd], imm, x_label[rs1], x_label[rd], address, data);
-        loadRd(data, rd, x);
-      } else if (funct3 == 0b010) {
-        const uint32_t data = mem[index] | (mem[index + 1] << 8) |
-                              (mem[index + 2] << 16) | (mem[index + 3] << 24);
-        fprintf(files.output,
-                "0x%08x:lw     %s,0x%03x(%s)        %s=mem[0x%08x]=0x%08x\n",
-                pc, x_label[rd], imm, x_label[rs1], x_label[rd], address, data);
-        loadRd(data, rd, x);
-      }
+      loadRd(data, rd, x);
       break;
     }
     case 0b1100111: { // JALR
@@ -372,40 +399,45 @@ int main(int argc, char *argv[]) {
     case 0b0100011: { // S-Type
       const int32_t simm = signedImmediate(immS);
       const uint32_t address = x[rs1] + simm;
+      const uint32_t data = x[rs2];
 
-      if ((address < offset) || (address >= (offset + 32 * 1024))) {
-        triggerException(7, address, &pc, &mepc, &mcause, &mtvec, &mtval);
+      if (address == CLINT_MSIP) {
+        clintMsip = data & 0x1;
         fprintf(files.output,
-                ">exception:store_fault          "
+                "0x%08x:sw     %s,0x000(%s)        mem[0x%08x]=0x%08x\n", pc,
+                x_label[rs2], x_label[rs1], address, data);
+      } else if (address >= offset && address < (offset + 32 * 1024)) {
+        const uint32_t index = address - offset;
+        if (funct3 == 0b010) { // sw
+          mem[index + 0] = (data >> 0) & 0xFF;
+          mem[index + 1] = (data >> 8) & 0xFF;
+          mem[index + 2] = (data >> 16) & 0xFF;
+          mem[index + 3] = (data >> 24) & 0xFF;
+          fprintf(files.output,
+                  "0x%08x:sw     %s,0x%03x(%s)        mem[0x%08x]=0x%08x\n", pc,
+                  x_label[rs2], immS, x_label[rs1], address, data);
+        } else if (funct3 == 0b001) { // sh
+          mem[index + 0] = (data >> 0) & 0xFF;
+          mem[index + 1] = (data >> 8) & 0xFF;
+          fprintf(files.output,
+                  "0x%08x:sh     %s,0x%03x(%s)    mem[0x%08x]=0x%04x\n", pc,
+                  x_label[rs2], immS, x_label[rs1], address,
+                  (uint32_t)(data & 0xFFFF));
+        } else if (funct3 == 0b000) { // sb
+          mem[index + 0] = (data >> 0) & 0xFF;
+          fprintf(files.output,
+                  "0x%08x:sb     %s,0x%03x(%s)    mem[0x%08x]=0x%02x\n", pc,
+                  x_label[rs2], immS, x_label[rs1], address,
+                  (uint32_t)(data & 0xFF));
+        }
+      } else {
+        triggerException(7, address, &pc, &mepc, &mcause, &mtvec, &mtval,
+                         &mstatus);
+        fprintf(files.output,
+                ">exception:store_fault                "
                 "cause=0x%08x,epc=0x%08x,tval=0x%08x\n",
                 mcause, mepc, mtval);
         continue;
-      }
-
-      const int32_t data = x[rs2];
-      const uint32_t index = address - offset;
-
-      if (funct3 == 0b010) {
-        mem[index + 0] = (data >> 0) & 0xFF;
-        mem[index + 1] = (data >> 8) & 0xFF;
-        mem[index + 2] = (data >> 16) & 0xFF;
-        mem[index + 3] = (data >> 24) & 0xFF;
-        fprintf(files.output,
-                "0x%08x:sw     %s,0x%03x(%s)        mem[0x%08x]=0x%08x\n", pc,
-                x_label[rs2], immS, x_label[rs1], address, data);
-      } else if (funct3 == 0b001) {
-        mem[index + 0] = (data >> 0) & 0xFF;
-        mem[index + 1] = (data >> 8) & 0xFF;
-        fprintf(files.output,
-                "0x%08x:sh     %s,0x%03x(%s)    mem[0x%08x]=0x%04x\n", pc,
-                x_label[rs2], immS, x_label[rs1], address,
-                (uint32_t)(data & 0xFFFF));
-      } else if (funct3 == 0b000) {
-        mem[index + 0] = (data >> 0) & 0xFF;
-        fprintf(files.output,
-                "0x%08x:sb     %s,0x%03x(%s)    mem[0x%08x]=0x%02x\n", pc,
-                x_label[rs2], immS, x_label[rs1], address,
-                (uint32_t)(data & 0xFF));
       }
       break;
     }
@@ -653,14 +685,17 @@ int main(int argc, char *argv[]) {
     case 0b1110011: { // SYSTEM
       const uint16_t csrAddress = imm;
       if (funct3 == 0b000 && csrAddress == 0) {
-        fprintf(files.output, "0x%08x:ecall\n", pc);
-        triggerException(11, pc, &pc, &mepc, &mcause, &mtvec, &mtval);
+        triggerException(11, pc, &pc, &mepc, &mcause, &mtvec, &mtval, &mstatus);
         fprintf(files.output,
-                ">exception:environment_call "
+                ">exception:environment_call           "
                 "cause=0x%08x,epc=0x%08x,tval=0x%08x\n",
                 mcause, mepc, mtval);
         continue;
       } else if (funct3 == 0b000 && csrAddress == 0x302) {
+        uint32_t mpie = (mstatus >> 7) & 1;
+        mstatus &= ~(1 << 3);
+        mstatus |= (mpie << 3);
+        mstatus |= (1 << 7);
         fprintf(files.output, "0x%08x:mret                       pc=0x%08x\n",
                 pc, mepc);
         pc = mepc;
@@ -670,14 +705,14 @@ int main(int argc, char *argv[]) {
         run = 0;
       } else {
         uint32_t oldCsrValue =
-            readCsr(csrAddress, mepc, mcause, mtvec, mtval, mstatus);
+            readCsr(csrAddress, mepc, mcause, mtvec, mtval, mstatus, mie, mip);
         uint32_t newCsrValue;
 
         switch (funct3) {
         case 0b001: // CSRRW
           newCsrValue = x[rs1];
           writeCsr(csrAddress, newCsrValue, &mepc, &mcause, &mtvec, &mtval,
-                   &mstatus);
+                   &mstatus, &mie, &mip);
           loadRd(oldCsrValue, rd, x);
           fprintf(files.output,
                   "0x%08x:csrrw  %s,%s,%s       %s=%s=0x%08x,%s=%s=0x%08x\n",
@@ -697,11 +732,12 @@ int main(int argc, char *argv[]) {
                   newCsrValue);
           if (rs1 != 0) {
             writeCsr(csrAddress, newCsrValue, &mepc, &mcause, &mtvec, &mtval,
-                     &mstatus);
+                     &mstatus, &mie, &mip);
           }
           break;
         default:
-          triggerException(2, instruction, &pc, &mepc, &mcause, &mtvec, &mtval);
+          triggerException(2, instruction, &pc, &mepc, &mcause, &mtvec, &mtval,
+                           &mstatus);
           fprintf(files.output,
                   ">exception:illegal_instruction          "
                   "cause=0x%08x,epc=0x%08x,tval=0x%08x\n",
@@ -712,7 +748,8 @@ int main(int argc, char *argv[]) {
       break;
     }
     default:
-      triggerException(2, instruction, &pc, &mepc, &mcause, &mtvec, &mtval);
+      triggerException(2, instruction, &pc, &mepc, &mcause, &mtvec, &mtval,
+                       &mstatus);
       fprintf(files.output,
               ">exception:illegal_instruction          "
               "cause=0x%08x,epc=0x%08x,tval=0x%08x\n",
@@ -726,6 +763,7 @@ int main(int argc, char *argv[]) {
   fclose(files.output);
   fclose(files.terminalInput);
   fclose(files.terminalOutput);
+  free(mem);
 
   return 0;
 }
