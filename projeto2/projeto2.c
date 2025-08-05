@@ -357,15 +357,32 @@ int main(int argc, char *argv[]) {
         const uint32_t index = address - offset;
         if (funct3 == 0b000) { // lb
           data = (int8_t)mem[index];
+          fprintf(files.output,
+                  "0x%08x:lb    %s,0x%03x(%s)   %s=mem[0x%08x]=0x%08x\n", pc,
+                  x_label[rd], imm, x_label[rs1], x_label[rd], address, data);
         } else if (funct3 == 0b001) { // lh
           data = (int16_t)(mem[index] | (mem[index + 1] << 8));
+          fprintf(files.output,
+                  "0x%08x:lh    %s,0x%03x(%s)   %s=mem[0x%08x]=0x%08x\n", pc,
+                  x_label[rd], imm, x_label[rs1], x_label[rd], address, data);
         } else if (funct3 == 0b100) { // lbu
           data = mem[index];
+          fprintf(files.output,
+                  "0x%08x:lbu    %s,0x%03x(%s)   %s=mem[0x%08x]=0x%08x\n", pc,
+                  x_label[rd], imm, x_label[rs1], x_label[rd], address, data);
         } else if (funct3 == 0b101) { // lhu
           data = mem[index] | (mem[index + 1] << 8);
+          fprintf(files.output,
+                  "0x%08x:lhu    %s,0x%03x(%s)   %s=mem[0x%08x]=0x%08x\n", pc,
+                  x_label[rd], imm, x_label[rs1], x_label[rd], address, data);
+          loadRd(data, rd, x);
         } else if (funct3 == 0b010) { // lw
           data = mem[index] | (mem[index + 1] << 8) | (mem[index + 2] << 16) |
                  (mem[index + 3] << 24);
+          fprintf(files.output,
+                  "0x%08x:lw     %s,0x%03x(%s)        %s=mem[0x%08x]=0x%08x\n",
+                  pc, x_label[rd], imm, x_label[rs1], x_label[rd], address,
+                  data);
         }
       } else {
         triggerException(5, address, &pc, &mepc, &mcause, &mtvec, &mtval,
