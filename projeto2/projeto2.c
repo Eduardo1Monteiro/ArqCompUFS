@@ -4,12 +4,24 @@
 #include <stdlib.h>
 
 // MACROS
+#define OFFSET 0x80000000
 // Definições do Mapa de Memória para Dispositivos de E/S
 #define CLINT_BASE 0x02000000
 #define CLINT_MSIP (CLINT_BASE + 0x0)
 #define CLINT_MTIMECMP (CLINT_BASE + 0x4000)
 #define CLINT_MTIME (CLINT_BASE + 0xBFF8)
-#define OFFSET 0x80000000
+
+// UART MACROS
+#define UART_BASE 0x10000000
+#define UART_TX_REG (UART_BASE + 0x0) // Registrador de Transmissão da UART
+// Endereços base para o Controlador de Interrupções (PLIC)
+#define PLIC_BASE 0x0c000000
+#define PLIC_PENDING (PLIC_BASE + 0x1000)
+#define PLIC_ENABLE (PLIC_BASE + 0x2000)
+#define PLIC_THRESHOLD 0x0c200000
+#define PLIC_CLAIM 0x0c200004
+// ID da fonte de interrupção para a UART no PLIC
+#define UART_IRQ 10
 
 typedef struct {
   FILE *input;
@@ -190,9 +202,11 @@ int main(int argc, char *argv[]) {
 
   uint32_t clintMsip = 0;
 
+  uint32_t plicPendingReg = 0, plicEnableReg = 0, plicThresholdReg = 0;
+
   while (run) {
     if (clintMsip > 0) {
-      mip |= (1 << 3);
+      mip |= (1 << 3); // MSIP
     } else {
       mip &= ~(1 << 3);
     }
@@ -204,10 +218,26 @@ int main(int argc, char *argv[]) {
       mip &= ~(1 << 7);
     }
 
+    uint32_t plicPendingAndEnabled = plicPendingReg & plicEnableReg;
+    if (plicPendingAndEnabled) {
+      mip |= (1 << 11); // MEIP - Machine External Interrupt Pending
+    } else {
+      mip &= ~(1 << 11);
+    }
+
     uint32_t pendingAndEnabled = mip & mie;
     uint32_t globalInterruptEnable = (mstatus >> 3) & 1;
 
     if (globalInterruptEnable && pendingAndEnabled != 0) {
+      if (pendingAndEnabled & (1 << 11)) { // External Interrupt
+        triggerException(0x8000000b, 0, &pc, &mepc, &mcause, &mtvec, &mtval,
+                         &mstatus);
+        fprintf(files.output,
+                ">interrupt:external                      "
+                "cause=0x%08x,epc=0x%08x,tval=0x%08x\n",
+                mcause, mepc, mtval);
+        continue;
+      }
       if (pendingAndEnabled & (1 << 7)) { // Timer Interrupt
         triggerException(0x80000007, 0, &pc, &mepc, &mcause, &mtvec, &mtval,
                          &mstatus);
@@ -373,6 +403,32 @@ int main(int argc, char *argv[]) {
         data = (uint32_t)mtime;
       } else if (address == CLINT_MTIME + 4) {
         data = (uint32_t)(mtime >> 32);
+      } else if (address == PLIC_ENABLE + (UART_IRQ / 32) * 4) {
+        data = plicEnableReg;
+      } else if (address == PLIC_PENDING + (UART_IRQ / 32) * 4) {
+        data = plicPendingReg;
+        fprintf(files.output,
+                "0x%08x:lw     %s,0x%03x(%s)       %s=mem[0x%08x]=0x%08x\n", pc,
+                x_label[rd], imm, x_label[rs1], x_label[rd], address, data);
+      } else if (address == PLIC_THRESHOLD) {
+        data = plicThresholdReg;
+        fprintf(files.output,
+                "0x%08x:lw     %s,0x%03x(%s)       %s=mem[0x%08x]=0x%08x\n", pc,
+                x_label[rd], imm, x_label[rs1], x_label[rd], address, data);
+      } else if (address == PLIC_CLAIM) {
+        if ((plicPendingReg & plicEnableReg) & (1 << UART_IRQ)) {
+          data = UART_IRQ;
+        } else {
+          data = 0;
+        }
+        fprintf(files.output,
+                "0x%08x:lw     %s,0x%03x(%s)       %s=mem[0x%08x]=0x%08x\n", pc,
+                x_label[rd], imm, x_label[rs1], x_label[rd], address, data);
+      } else if (address == UART_BASE + 2) {
+        data = 1;
+        fprintf(files.output,
+                "0x%08x:lb     %s,0x%03x(%s)       %s=mem[0x%08x]=0x%08x\n", pc,
+                x_label[rd], imm, x_label[rs1], x_label[rd], address, data);
       } else if (address >= OFFSET && address < (OFFSET + 32 * 1024)) {
         const uint32_t index = address - OFFSET;
         if (funct3 == 0b000) { // lb
@@ -445,26 +501,42 @@ int main(int argc, char *argv[]) {
 
       if (address == CLINT_MSIP) {
         clintMsip = data & 0x1;
-        fprintf(files.output,
-                "0x%08x:sw     %s,0x%03x(%s)       mem[0x%08x]=0x%08x\n", pc,
-                x_label[rs2], immS, x_label[rs1], address, data);
       } else if (address == CLINT_MTIMECMP) {
         mtimecmp = (mtimecmp & 0xFFFFFFFF00000000) | data;
-        fprintf(files.output,
-                "0x%08x:sw     %s,0x%03x(%s)       mem[0x%08x]=0x%08x\n", pc,
-                x_label[rs2], immS, x_label[rs1], address, data);
       } else if (address == CLINT_MTIMECMP + 4) {
         mtimecmp = (mtimecmp & 0x00000000FFFFFFFF) | ((uint64_t)data << 32);
-        fprintf(files.output,
-                "0x%08x:sw     %s,0x%03x(%s)       mem[0x%08x]=0x%08x\n", pc,
-                x_label[rs2], immS, x_label[rs1], address, data);
       } else if (address == CLINT_MTIME) {
         mtime = (mtime & 0xFFFFFFFF00000000) | data;
+      } else if (address == CLINT_MTIME + 4) {
+        mtime = (mtime & 0x00000000FFFFFFFF) | ((uint64_t)data << 32);
+      } else if (address == UART_TX_REG) {
+        fputc((char)data, files.terminalOutput);
+        fflush(files.terminalOutput);
+        plicPendingReg |= (1 << UART_IRQ);
+        fprintf(files.output,
+                "0x%08x:sb     %s,0x%03x(%s)   mem[0x%08x]=0x%02x\n", pc,
+                x_label[rs2], immS, x_label[rs1], address,
+                (uint32_t)(data & 0xFF));
+      } else if (address == UART_BASE + 1) {
+        fprintf(files.output,
+                "0x%08x:sb     %s,0x%03x(%s)   mem[0x%08x]=0x%02x\n", pc,
+                x_label[rs2], immS, x_label[rs1], address,
+                (uint32_t)(data & 0xFF));
+      } else if (address == PLIC_BASE + 0x28) {
         fprintf(files.output,
                 "0x%08x:sw     %s,0x%03x(%s)       mem[0x%08x]=0x%08x\n", pc,
                 x_label[rs2], immS, x_label[rs1], address, data);
-      } else if (address == CLINT_MTIME + 4) {
-        mtime = (mtime & 0x00000000FFFFFFFF) | ((uint64_t)data << 32);
+      } else if (address == PLIC_ENABLE + (UART_IRQ / 32) * 4) {
+        plicEnableReg = data;
+        fprintf(files.output,
+                "0x%08x:sw     %s,0x%03x(%s)       mem[0x%08x]=0x%08x\n", pc,
+                x_label[rs2], immS, x_label[rs1], address, data);
+      } else if (address == PLIC_THRESHOLD) {
+        plicThresholdReg = data;
+      } else if (address == PLIC_CLAIM) {
+        if (data == UART_IRQ) {
+          plicPendingReg &= ~(1 << UART_IRQ);
+        }
         fprintf(files.output,
                 "0x%08x:sw     %s,0x%03x(%s)       mem[0x%08x]=0x%08x\n", pc,
                 x_label[rs2], immS, x_label[rs1], address, data);
