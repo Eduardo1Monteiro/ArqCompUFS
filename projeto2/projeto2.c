@@ -1,10 +1,15 @@
+// Imports
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 
+// MACROS
 // Definições do Mapa de Memória para Dispositivos de E/S
 #define CLINT_BASE 0x02000000
 #define CLINT_MSIP (CLINT_BASE + 0x0)
+#define CLINT_MTIMECMP (CLINT_BASE + 0x4000)
+#define CLINT_MTIME (CLINT_BASE + 0xBFF8)
+#define OFFSET 0x80000000
 
 typedef struct {
   FILE *input;
@@ -14,50 +19,37 @@ typedef struct {
 } Files;
 
 Files readFile(char *argv[]) {
-
   Files files;
-
   files.input = fopen(argv[1], "r");
   files.output = fopen(argv[2], "w");
   files.terminalInput = fopen(argv[3], "r");
   files.terminalOutput = fopen(argv[4], "w");
-
   return files;
 }
 
 void loadMemory(FILE *input, uint32_t offset, uint8_t *mem) {
-
   char lineBuffer[256];
   uint32_t currentAddress = 0;
-
   rewind(input);
-
   while (fgets(lineBuffer, sizeof(lineBuffer), input) != NULL) {
-
     if (lineBuffer[0] == '@') {
       sscanf(lineBuffer, "@%x", &currentAddress);
     } else {
       char *ptr = lineBuffer;
       int chars_scanned = 0;
       unsigned int byte_val = 0;
-
       while (sscanf(ptr, "%x%n", &byte_val, &chars_scanned) == 1) {
-
         if (currentAddress >= offset) {
           uint32_t mem_index = currentAddress - offset;
-
           if (mem_index < (32 * 1024)) {
             mem[mem_index] = (uint8_t)byte_val;
           }
         }
-
         currentAddress++;
         ptr += chars_scanned;
       }
     }
   }
-
-  return;
 }
 
 int32_t signedImmediate(uint16_t imm) {
@@ -165,17 +157,16 @@ void writeCsr(uint16_t address, uint32_t data, uint32_t *mepc, uint32_t *mcause,
 
 int main(int argc, char *argv[]) {
 
-  printf("---------------------------------------------------------------------"
-         "----\n");
+  printf("Code being executed...");
 
   Files files = readFile(argv);
 
-  const uint32_t offset = 0x80000000;
+  uint32_t pc = OFFSET;
 
-  uint32_t pc = offset;
-
+  // registers
   uint32_t x[32] = {0};
 
+  // registers name
   const char *x_label[32] = {
       "zero", "ra", "sp", "gp", "tp",  "t0",  "t1", "t2", "s0", "s1", "a0",
       "a1",   "a2", "a3", "a4", "a5",  "a6",  "a7", "s2", "s3", "s4", "s5",
@@ -188,12 +179,14 @@ int main(int argc, char *argv[]) {
     exit(EXIT_FAILURE);
   }
 
-  loadMemory(files.input, offset, mem);
+  loadMemory(files.input, OFFSET, mem);
 
+  // VARIABLES SECTION
   uint8_t run = 1;
-
+  // CSRs
   uint32_t mepc = 0, mcause = 0, mtvec = 0, mtval = 0, mstatus = 0, mie = 0,
            mip = 0;
+  uint64_t mtime = 0, mtimecmp = 0;
 
   uint32_t clintMsip = 0;
 
@@ -204,31 +197,49 @@ int main(int argc, char *argv[]) {
       mip &= ~(1 << 3);
     }
 
+    // TIMER
+    if (mtime >= mtimecmp) {
+      mip |= (1 << 7); // MTIP
+    } else {
+      mip &= ~(1 << 7);
+    }
+
     uint32_t pendingAndEnabled = mip & mie;
     uint32_t globalInterruptEnable = (mstatus >> 3) & 1;
 
-    if (globalInterruptEnable && (pendingAndEnabled & (1 << 3))) {
-      triggerException(0x80000003, 0, &pc, &mepc, &mcause, &mtvec, &mtval,
-                       &mstatus);
-      fprintf(files.output,
-              ">interrupt:software                  "
-              "cause=0x%08x,epc=0x%08x,tval=0x%08x\n",
-              mcause, mepc, mtval);
-      continue;
+    if (globalInterruptEnable && pendingAndEnabled != 0) {
+      if (pendingAndEnabled & (1 << 7)) { // Timer Interrupt
+        triggerException(0x80000007, 0, &pc, &mepc, &mcause, &mtvec, &mtval,
+                         &mstatus);
+        fprintf(files.output,
+                ">interrupt:timer                         "
+                "cause=0x%08x,epc=0x%08x,tval=0x%08x\n",
+                mcause, mepc, mtval);
+        continue;
+      }
+      if (pendingAndEnabled & (1 << 3)) { // Software Interrupt
+        triggerException(0x80000003, 0, &pc, &mepc, &mcause, &mtvec, &mtval,
+                         &mstatus);
+        fprintf(files.output,
+                ">interrupt:software                      "
+                "cause=0x%08x,epc=0x%08x,tval=0x%08x\n",
+                mcause, mepc, mtval);
+        continue;
+      }
     }
 
-    if ((pc < offset) || (pc >= (offset + 32 * 1024 - 3))) {
+    if ((pc < OFFSET) || (pc >= (OFFSET + 32 * 1024 - 3))) {
       triggerException(1, pc, &pc, &mepc, &mcause, &mtvec, &mtval, &mstatus);
       fprintf(files.output,
-              ">exception:instruction_fault          "
+              ">exception:instruction_fault           "
               "cause=0x%08x,epc=0x%08x,tval=0x%08x\n",
               mcause, mepc, mtval);
       continue;
     }
 
-    uint32_t instruction = mem[pc - offset] | (mem[pc - offset + 1] << 8) |
-                           (mem[pc - offset + 2] << 16) |
-                           (mem[pc - offset + 3] << 24);
+    uint32_t instruction = mem[pc - OFFSET] | (mem[pc - OFFSET + 1] << 8) |
+                           (mem[pc - OFFSET + 2] << 16) |
+                           (mem[pc - OFFSET + 3] << 24);
     const uint8_t opcode = instruction & 0x7F;
     const uint8_t funct7 = (instruction >> 25) & 0x7F;
     const uint16_t imm = instruction >> 20;
@@ -350,20 +361,29 @@ int main(int argc, char *argv[]) {
       const int32_t simm = signedImmediate(imm);
       const uint32_t address = x[rs1] + simm;
       uint32_t data = 0;
+      int handled = 1;
 
       if (address == CLINT_MSIP) {
         data = clintMsip;
-      } else if (address >= offset && address < (offset + 32 * 1024)) {
-        const uint32_t index = address - offset;
+      } else if (address == CLINT_MTIMECMP) {
+        data = (uint32_t)mtimecmp;
+      } else if (address == CLINT_MTIMECMP + 4) {
+        data = (uint32_t)(mtimecmp >> 32);
+      } else if (address == CLINT_MTIME) {
+        data = (uint32_t)mtime;
+      } else if (address == CLINT_MTIME + 4) {
+        data = (uint32_t)(mtime >> 32);
+      } else if (address >= OFFSET && address < (OFFSET + 32 * 1024)) {
+        const uint32_t index = address - OFFSET;
         if (funct3 == 0b000) { // lb
           data = (int8_t)mem[index];
           fprintf(files.output,
-                  "0x%08x:lb    %s,0x%03x(%s)   %s=mem[0x%08x]=0x%08x\n", pc,
+                  "0x%08x:lb     %s,0x%03x(%s)   %s=mem[0x%08x]=0x%08x\n", pc,
                   x_label[rd], imm, x_label[rs1], x_label[rd], address, data);
         } else if (funct3 == 0b001) { // lh
           data = (int16_t)(mem[index] | (mem[index + 1] << 8));
           fprintf(files.output,
-                  "0x%08x:lh    %s,0x%03x(%s)   %s=mem[0x%08x]=0x%08x\n", pc,
+                  "0x%08x:lh     %s,0x%03x(%s)   %s=mem[0x%08x]=0x%08x\n", pc,
                   x_label[rd], imm, x_label[rs1], x_label[rd], address, data);
         } else if (funct3 == 0b100) { // lbu
           data = mem[index];
@@ -375,25 +395,31 @@ int main(int argc, char *argv[]) {
           fprintf(files.output,
                   "0x%08x:lhu    %s,0x%03x(%s)   %s=mem[0x%08x]=0x%08x\n", pc,
                   x_label[rd], imm, x_label[rs1], x_label[rd], address, data);
-          loadRd(data, rd, x);
         } else if (funct3 == 0b010) { // lw
           data = mem[index] | (mem[index + 1] << 8) | (mem[index + 2] << 16) |
                  (mem[index + 3] << 24);
           fprintf(files.output,
-                  "0x%08x:lw     %s,0x%03x(%s)        %s=mem[0x%08x]=0x%08x\n",
+                  "0x%08x:lw     %s,0x%03x(%s)       %s=mem[0x%08x]=0x%08x\n",
                   pc, x_label[rd], imm, x_label[rs1], x_label[rd], address,
                   data);
+        } else {
+          handled = 0;
         }
+      } else {
+        handled = 0;
+      }
+
+      if (handled) {
+        loadRd(data, rd, x);
       } else {
         triggerException(5, address, &pc, &mepc, &mcause, &mtvec, &mtval,
                          &mstatus);
         fprintf(files.output,
-                ">exception:load_fault                 "
+                ">exception:load_fault                     "
                 "cause=0x%08x,epc=0x%08x,tval=0x%08x\n",
                 mcause, mepc, mtval);
         continue;
       }
-      loadRd(data, rd, x);
       break;
     }
     case 0b1100111: { // JALR
@@ -406,9 +432,7 @@ int main(int argc, char *argv[]) {
                 "0x%08x:jalr   %s,%s,0x%03x       pc=0x%08x+0x%08x,%s=0x%08x\n",
                 pc, x_label[rd], x_label[rs1], imm, x[rs1], simm, x_label[rd],
                 data);
-
         loadRd(data, rd, x);
-
         pc = address - 4;
       }
       break;
@@ -417,41 +441,68 @@ int main(int argc, char *argv[]) {
       const int32_t simm = signedImmediate(immS);
       const uint32_t address = x[rs1] + simm;
       const uint32_t data = x[rs2];
+      int handled = 1;
 
       if (address == CLINT_MSIP) {
         clintMsip = data & 0x1;
         fprintf(files.output,
-                "0x%08x:sw     %s,0x000(%s)        mem[0x%08x]=0x%08x\n", pc,
-                x_label[rs2], x_label[rs1], address, data);
-      } else if (address >= offset && address < (offset + 32 * 1024)) {
-        const uint32_t index = address - offset;
+                "0x%08x:sw     %s,0x%03x(%s)       mem[0x%08x]=0x%08x\n", pc,
+                x_label[rs2], immS, x_label[rs1], address, data);
+      } else if (address == CLINT_MTIMECMP) {
+        mtimecmp = (mtimecmp & 0xFFFFFFFF00000000) | data;
+        fprintf(files.output,
+                "0x%08x:sw     %s,0x%03x(%s)       mem[0x%08x]=0x%08x\n", pc,
+                x_label[rs2], immS, x_label[rs1], address, data);
+      } else if (address == CLINT_MTIMECMP + 4) {
+        mtimecmp = (mtimecmp & 0x00000000FFFFFFFF) | ((uint64_t)data << 32);
+        fprintf(files.output,
+                "0x%08x:sw     %s,0x%03x(%s)       mem[0x%08x]=0x%08x\n", pc,
+                x_label[rs2], immS, x_label[rs1], address, data);
+      } else if (address == CLINT_MTIME) {
+        mtime = (mtime & 0xFFFFFFFF00000000) | data;
+        fprintf(files.output,
+                "0x%08x:sw     %s,0x%03x(%s)       mem[0x%08x]=0x%08x\n", pc,
+                x_label[rs2], immS, x_label[rs1], address, data);
+      } else if (address == CLINT_MTIME + 4) {
+        mtime = (mtime & 0x00000000FFFFFFFF) | ((uint64_t)data << 32);
+        fprintf(files.output,
+                "0x%08x:sw     %s,0x%03x(%s)       mem[0x%08x]=0x%08x\n", pc,
+                x_label[rs2], immS, x_label[rs1], address, data);
+      } else if (address >= OFFSET && address < (OFFSET + 32 * 1024)) {
+        const uint32_t index = address - OFFSET;
         if (funct3 == 0b010) { // sw
           mem[index + 0] = (data >> 0) & 0xFF;
           mem[index + 1] = (data >> 8) & 0xFF;
           mem[index + 2] = (data >> 16) & 0xFF;
           mem[index + 3] = (data >> 24) & 0xFF;
           fprintf(files.output,
-                  "0x%08x:sw     %s,0x%03x(%s)        mem[0x%08x]=0x%08x\n", pc,
+                  "0x%08x:sw     %s,0x%03x(%s)       mem[0x%08x]=0x%08x\n", pc,
                   x_label[rs2], immS, x_label[rs1], address, data);
         } else if (funct3 == 0b001) { // sh
           mem[index + 0] = (data >> 0) & 0xFF;
           mem[index + 1] = (data >> 8) & 0xFF;
           fprintf(files.output,
-                  "0x%08x:sh     %s,0x%03x(%s)    mem[0x%08x]=0x%04x\n", pc,
+                  "0x%08x:sh     %s,0x%03x(%s)   mem[0x%08x]=0x%04x\n", pc,
                   x_label[rs2], immS, x_label[rs1], address,
                   (uint32_t)(data & 0xFFFF));
         } else if (funct3 == 0b000) { // sb
           mem[index + 0] = (data >> 0) & 0xFF;
           fprintf(files.output,
-                  "0x%08x:sb     %s,0x%03x(%s)    mem[0x%08x]=0x%02x\n", pc,
+                  "0x%08x:sb     %s,0x%03x(%s)   mem[0x%08x]=0x%02x\n", pc,
                   x_label[rs2], immS, x_label[rs1], address,
                   (uint32_t)(data & 0xFF));
+        } else {
+          handled = 0;
         }
       } else {
+        handled = 0;
+      }
+
+      if (!handled) {
         triggerException(7, address, &pc, &mepc, &mcause, &mtvec, &mtval,
                          &mstatus);
         fprintf(files.output,
-                ">exception:store_fault                "
+                ">exception:store_fault                    "
                 "cause=0x%08x,epc=0x%08x,tval=0x%08x\n",
                 mcause, mepc, mtval);
         continue;
@@ -691,7 +742,7 @@ int main(int argc, char *argv[]) {
       const uint32_t address = pc + jalOffset;
 
       fprintf(files.output,
-              "0x%08x:jal    %s,0x%05x        pc=0x%08x,%s=0x%08x\n", pc,
+              "0x%08x:jal    %s,0x%05x       pc=0x%08x,%s=0x%08x\n", pc,
               x_label[rd], (uint32_t)(jalOffset / 2) & 0xFFFFF, address,
               x_label[rd], data);
 
@@ -704,7 +755,7 @@ int main(int argc, char *argv[]) {
       if (funct3 == 0b000 && csrAddress == 0) {
         triggerException(11, pc, &pc, &mepc, &mcause, &mtvec, &mtval, &mstatus);
         fprintf(files.output,
-                ">exception:environment_call           "
+                ">exception:environment_call             "
                 "cause=0x%08x,epc=0x%08x,tval=0x%08x\n",
                 mcause, mepc, mtval);
         continue;
@@ -713,8 +764,9 @@ int main(int argc, char *argv[]) {
         mstatus &= ~(1 << 3);
         mstatus |= (mpie << 3);
         mstatus |= (1 << 7);
-        fprintf(files.output, "0x%08x:mret                       pc=0x%08x\n",
-                pc, mepc);
+        fprintf(files.output,
+                "0x%08x:mret                                 pc=0x%08x\n", pc,
+                mepc);
         pc = mepc;
         continue;
       } else if (funct3 == 0b000 && csrAddress == 1) {
@@ -741,7 +793,7 @@ int main(int argc, char *argv[]) {
           newCsrValue = oldCsrValue | x[rs1];
           loadRd(oldCsrValue, rd, x);
           fprintf(files.output,
-                  "0x%08x:csrrs  %s,%s,%s      "
+                  "0x%08x:csrrs  %s,%s,%s       "
                   "%s=%s=0x%08x,%s|=%s=0x%08x|0x%08x=0x%08x\n",
                   pc, x_label[rd], getCsrName(csrAddress), x_label[rs1],
                   x_label[rd], getCsrName(csrAddress), oldCsrValue,
@@ -773,7 +825,8 @@ int main(int argc, char *argv[]) {
               mcause, mepc, mtval);
       continue;
     }
-    pc = pc + 4;
+    pc += 4;
+    mtime++;
   }
 
   fclose(files.input);
