@@ -116,24 +116,24 @@ const char *getCsrName(uint16_t address) {
   }
 }
 
-uint32_t readCsr(uint16_t address, uint32_t mepc, uint32_t mcause,
-                 uint32_t mtvec, uint32_t mtval, uint32_t mstatus, uint32_t mie,
-                 uint32_t mip) {
+uint32_t readCsr(uint16_t address, uint32_t *mepc, uint32_t *mcause,
+                 uint32_t *mtvec, uint32_t *mtval, uint32_t *mstatus,
+                 uint32_t *mie, uint32_t *mip) {
   switch (address) {
   case 0x300:
-    return mstatus;
+    return *mstatus;
   case 0x304:
-    return mie;
+    return *mie;
   case 0x305:
-    return mtvec;
+    return *mtvec;
   case 0x341:
-    return mepc;
+    return *mepc;
   case 0x342:
-    return mcause;
+    return *mcause;
   case 0x343:
-    return mtval;
+    return *mtval;
   case 0x344:
-    return mip;
+    return *mip;
   default:
     return 0;
   }
@@ -846,8 +846,8 @@ int main(int argc, char *argv[]) {
         fprintf(files.output, "0x%08x:ebreak\n", pc);
         run = 0;
       } else {
-        uint32_t oldCsrValue =
-            readCsr(csrAddress, mepc, mcause, mtvec, mtval, mstatus, mie, mip);
+        uint32_t oldCsrValue = readCsr(csrAddress, &mepc, &mcause, &mtvec,
+                                       &mtval, &mstatus, &mie, &mip);
         uint32_t newCsrValue;
 
         switch (funct3) {
