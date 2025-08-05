@@ -5,7 +5,7 @@
 
 // MACROS
 #define OFFSET 0x80000000
-// Definições do Mapa de Memória para Dispositivos de E/S
+// Mapa de Memória para Dispositivos de E/S
 #define CLINT_BASE 0x02000000
 #define CLINT_MSIP (CLINT_BASE + 0x0)
 #define CLINT_MTIMECMP (CLINT_BASE + 0x4000)
@@ -14,7 +14,7 @@
 // UART MACROS
 #define UART_BASE 0x10000000
 #define UART_TX_REG (UART_BASE + 0x0) // Registrador de Transmissão da UART
-// Endereços base para o Controlador de Interrupções (PLIC)
+// Endereços base para o PLIC
 #define PLIC_BASE 0x0c000000
 #define PLIC_PENDING (PLIC_BASE + 0x1000)
 #define PLIC_ENABLE (PLIC_BASE + 0x2000)
@@ -48,17 +48,17 @@ void loadMemory(FILE *input, uint32_t offset, uint8_t *mem) {
       sscanf(lineBuffer, "@%x", &currentAddress);
     } else {
       char *ptr = lineBuffer;
-      int chars_scanned = 0;
-      unsigned int byte_val = 0;
-      while (sscanf(ptr, "%x%n", &byte_val, &chars_scanned) == 1) {
+      int charsScanned = 0;
+      unsigned int byteVal = 0;
+      while (sscanf(ptr, "%x%n", &byteVal, &charsScanned) == 1) {
         if (currentAddress >= offset) {
-          uint32_t mem_index = currentAddress - offset;
-          if (mem_index < (32 * 1024)) {
-            mem[mem_index] = (uint8_t)byte_val;
+          uint32_t memIndex = currentAddress - offset;
+          if (memIndex < (32 * 1024)) {
+            mem[memIndex] = (uint8_t)byteVal;
           }
         }
         currentAddress++;
-        ptr += chars_scanned;
+        ptr += charsScanned;
       }
     }
   }
@@ -826,6 +826,7 @@ int main(int argc, char *argv[]) {
       const uint16_t csrAddress = imm;
       if (funct3 == 0b000 && csrAddress == 0) {
         triggerException(11, pc, &pc, &mepc, &mcause, &mtvec, &mtval, &mstatus);
+        fprintf(files.output, "0x%08x:ecall\n", pc);
         fprintf(files.output,
                 ">exception:environment_call             "
                 "cause=0x%08x,epc=0x%08x,tval=0x%08x\n",
